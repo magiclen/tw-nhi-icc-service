@@ -1,0 +1,37 @@
+[package]
+name = "tw-nhi-service"
+version = "0.1.0"
+authors = ["Magic Len <len@magiclen.org>"]
+edition = "2021"
+repository = "https://github.com/magiclen/tw-nhi-service"
+homepage = "https://magiclen.org/tw-nhi-service"
+keywords = ["smart-card", "pcsc", "nhi-card"]
+categories = ["web-programming::http-client"]
+description = "Read Taiwan NHI cards via HTTP API. 透過 HTTP API 讀取中華民國健保卡。"
+readme = "README.md"
+license = "MIT"
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+concat-with = "0.2"
+terminal_size = "0.2"
+
+serde = { version = "1", features = ["derive"] }
+
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hyper = { version = "0.14", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.3", features = ["trace", "set-header"] }
+axum = "0.6"
+
+pcsc = "2"
+chrono = { version = "0.4", features = ["serde"] }
+encoding_rs = "0.8"
+atty = "0.2.14"
