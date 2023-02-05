@@ -1,4 +1,3 @@
-use atty::Stream;
 use std::net::{AddrParseError, IpAddr, SocketAddr};
 use std::str::FromStr;
 
@@ -57,8 +56,14 @@ impl Args {
 
 #[tokio::main]
 async fn main() {
+    let mut ansi_color = atty::is(atty::Stream::Stdout);
+
+    if ansi_color && enable_ansi_support::enable_ansi_support().is_err() {
+        ansi_color = false;
+    }
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_ansi(atty::is(Stream::Stdout)))
+        .with(tracing_subscriber::fmt::layer().with_ansi(ansi_color))
         .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
         .init();
 
