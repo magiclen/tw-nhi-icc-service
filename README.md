@@ -1,6 +1,8 @@
 TW NHI Card Service
 ===============
 
+[![CI](https://github.com/magiclen/tw-nhi-service/actions/workflows/ci.yml/badge.svg)](https://github.com/magiclen/tw-nhi-service/actions/workflows/ci.yml)
+
 透過 HTTP API 讀取中華民國健保卡。
 
 Read Taiwan NHI cards via HTTP API.
