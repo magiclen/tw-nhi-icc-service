@@ -34,4 +34,4 @@ axum = "0.6"
 pcsc = "2"
 chrono = { version = "0.4", features = ["serde"] }
 encoding_rs = "0.8"
-atty = "0.2.14"
+atty = "0.2"
