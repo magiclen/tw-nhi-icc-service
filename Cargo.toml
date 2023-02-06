@@ -1,11 +1,11 @@
 [package]
-name = "tw-nhi-service"
+name = "tw-nhi-icc-service"
 version = "0.1.2"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
-repository = "https://github.com/magiclen/tw-nhi-service"
-homepage = "https://magiclen.org/tw-nhi-service"
-keywords = ["smart-card", "pcsc", "nhi-card", "taiwan"]
+repository = "https://github.com/magiclen/tw-nhi-icc-service"
+homepage = "https://magiclen.org/tw-nhi-icc-service"
+keywords = ["smart-card", "pcsc", "nhi-card", "ic-card", "taiwan"]
 categories = ["command-line-utilities"]
 description = "Read Taiwan NHI cards via HTTP API. 透過 HTTP API 讀取中華民國健保卡。"
 readme = "README.md"

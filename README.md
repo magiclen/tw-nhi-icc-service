@@ -1,7 +1,7 @@
-TW NHI Card Service
+TW NHI IC Card Service
 ===============
 
-[![CI](https://github.com/magiclen/tw-nhi-service/actions/workflows/ci.yml/badge.svg)](https://github.com/magiclen/tw-nhi-service/actions/workflows/ci.yml)
+[![CI](https://github.com/magiclen/tw-nhi-icc-service/actions/workflows/ci.yml/badge.svg)](https://github.com/magiclen/tw-nhi-icc-service/actions/workflows/ci.yml)
 
 透過 HTTP API 讀取中華民國健保卡。
 
@@ -41,10 +41,10 @@ sudo apt install libpcsclite-dev
 
 ```text
 EXAMPLES:
-tw-nhi-service                      # 啟動 HTTP 服務，監聽 127.0.0.1:58113
-tw-nhi-service -i 0.0.0.0 -p 12345  # 啟動 HTTP 服務，監聽 0.0.0.0:12345
+tw-nhi-icc-service                      # 啟動 HTTP 服務，監聽 127.0.0.1:58113
+tw-nhi-icc-service -i 0.0.0.0 -p 12345  # 啟動 HTTP 服務，監聽 0.0.0.0:12345
 
-Usage: tw-nhi-service [OPTIONS]
+Usage: tw-nhi-icc-service [OPTIONS]
 
 Options:
   -i, --interface <INTERFACE>  要監聽的網路介面 IP [default: 127.0.0.1] [aliases: ip]

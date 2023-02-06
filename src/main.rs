@@ -15,15 +15,15 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-use tw_nhi_service::create_app;
+use tw_nhi_icc_service::create_app;
 
-const APP_NAME: &str = "TW NHI Card Service";
+const APP_NAME: &str = "TW NHI IC Card Service";
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CARGO_PKG_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 
 const APP_ABOUT: &str = concat!(
     "透過 HTTP API 讀取中華民國健保卡。\n\nEXAMPLES:\n",
-    concat_line!(prefix "tw-nhi-service ",
+    concat_line!(prefix "tw-nhi-icc-service ",
         "                     # 啟動 HTTP 服務，監聽 127.0.0.1:58113",
         "-i 0.0.0.0 -p 12345  # 啟動 HTTP 服務，監聽 0.0.0.0:12345",
     )
