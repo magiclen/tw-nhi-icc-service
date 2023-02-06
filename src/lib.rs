@@ -8,7 +8,6 @@ use chrono::NaiveDate;
 
 use serde::Serialize;
 
-use axum::extract::State;
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::{routing::get, Json, Router};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -110,16 +109,16 @@ impl NHICardBasic {
     fn raw_to_naive_date(data: &[u8]) -> Result<NaiveDate, NHICardParseError> {
         let s = String::from_utf8(data.to_vec())?;
 
-        let tw_year = {
-            let y = s.chars().take(3).collect::<String>().parse::<i32>()?;
+        let year = {
+            let tw_year = s.chars().take(3).collect::<String>().parse::<i32>()?;
 
-            1911 + y
+            1911 + tw_year
         };
 
         let month = s.chars().skip(3).take(2).collect::<String>().parse::<u32>()?;
         let date = s.chars().skip(5).take(2).collect::<String>().parse::<u32>()?;
 
-        match NaiveDate::from_ymd_opt(tw_year, month, date) {
+        match NaiveDate::from_ymd_opt(year, month, date) {
             Some(date) => Ok(date),
             None => Err(NHICardParseError),
         }
@@ -182,6 +181,11 @@ impl NHICardBasic {
 }
 
 #[inline]
+pub fn pcsc_ctx() -> Result<Context, pcsc::Error> {
+    Context::establish(Scope::User)
+}
+
+#[inline]
 pub fn list_readers_len(pcsc_ctx: &Context) -> Result<usize, pcsc::Error> {
     pcsc_ctx.list_readers_len()
 }
@@ -241,7 +245,19 @@ pub fn read_nhi_cards(pcsc_ctx: &Context) -> Result<Vec<NHICardBasic>, pcsc::Err
     let readers = list_readers(pcsc_ctx)?;
 
     for reader in readers {
-        let card = connect_card(pcsc_ctx, reader.as_str())?;
+        let card = match connect_card(pcsc_ctx, reader.as_str()) {
+            Ok(card) => card,
+            Err(err) => {
+                match err {
+                    pcsc::Error::NoSmartcard | pcsc::Error::RemovedCard => {
+                        continue;
+                    }
+                    _ => {
+                        return Err(err);
+                    }
+                }
+            }
+        };
 
         match get_nhi_data(card) {
             Ok(mut basic) => {
@@ -265,7 +281,15 @@ pub fn read_nhi_cards(pcsc_ctx: &Context) -> Result<Vec<NHICardBasic>, pcsc::Err
     Ok(output)
 }
 
-pub async fn index_handler(State(pcsc_ctx): State<Context>) -> Json<Vec<NHICardBasic>> {
+pub async fn index_handler() -> Json<Vec<NHICardBasic>> {
+    let pcsc_ctx = match pcsc_ctx() {
+        Ok(pcsc_ctx) => pcsc_ctx,
+        Err(err) => {
+            tracing::warn!("找不到 PC/SC 服務，請確認讀卡機有連接上並安裝了正確的驅動程式：{err}");
+            return Json(Vec::new());
+        }
+    };
+
     let result = read_nhi_cards(&pcsc_ctx).unwrap();
 
     Json(result)
@@ -276,21 +300,13 @@ pub async fn version_handler() -> &'static str {
 }
 
 pub fn create_app() -> Result<Router, String> {
-    let pcsc_ctx = match Context::establish(Scope::User) {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            return Err(format!("找不到 PC/SC 服務：{err}"));
-        }
-    };
-
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/version", get(version_handler))
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("cache-control"),
             HeaderValue::from_static("no-store"),
-        ))
-        .with_state(pcsc_ctx);
+        ));
 
     Ok(app)
 }

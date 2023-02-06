@@ -1,10 +1,13 @@
+use std::io::{stdin, stdout, Read, Write};
 use std::net::{AddrParseError, IpAddr, SocketAddr};
+use std::process;
 use std::str::FromStr;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use terminal_size::terminal_size;
 
 use concat_with::concat_line;
+use tower_http::cors::CorsLayer;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -54,6 +57,14 @@ impl Args {
     }
 }
 
+fn press_any_key_to_continue() {
+    let mut stdout = stdout();
+    write!(stdout, "按下 Enter 繼續……").unwrap();
+    stdout.flush().unwrap();
+
+    let _ = stdin().read(&mut [0u8]).unwrap();
+}
+
 #[tokio::main]
 async fn main() {
     let mut ansi_color = atty::is(atty::Stream::Stdout);
@@ -73,7 +84,7 @@ async fn main() {
         Ok(addr) => {
             match create_app() {
                 Ok(app) => {
-                    let app = app.layer(
+                    let app = app.layer(CorsLayer::permissive()).layer(
                         TraceLayer::new_for_http()
                             .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                             .on_request(DefaultOnRequest::new().level(Level::INFO))
@@ -82,7 +93,14 @@ async fn main() {
 
                     tracing::info!("listening on {addr}");
 
-                    axum::Server::bind(&addr).serve(app.into_make_service()).await.unwrap();
+                    match axum::Server::bind(&addr).serve(app.into_make_service()).await {
+                        Ok(_) => {
+                            process::exit(0);
+                        }
+                        Err(err) => {
+                            eprintln!("{err}");
+                        }
+                    }
                 }
                 Err(err) => {
                     eprintln!("{err}");
@@ -93,6 +111,9 @@ async fn main() {
             eprintln!("{:?} 不是正確的 IP", args.interface);
         }
     }
+
+    press_any_key_to_continue();
+    process::exit(-1);
 }
 
 fn get_args() -> Args {

@@ -1,6 +1,6 @@
 [package]
 name = "tw-nhi-service"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
 repository = "https://github.com/magiclen/tw-nhi-service"
@@ -30,7 +30,7 @@ enable-ansi-support = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hyper = { version = "0.14", features = ["full"] }
 tower = "0.4"
-tower-http = { version = "0.3", features = ["trace", "set-header"] }
+tower-http = { version = "0.3", features = ["trace", "set-header", "cors"] }
 axum = "0.6"
 
 pcsc = "2"
