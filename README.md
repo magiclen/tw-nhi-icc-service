@@ -22,7 +22,7 @@ Read Taiwan NHI cards via HTTP API.
 基於 Debian 的 Linux 發行版可用以下指令安裝：
 
 ```bash
-sudo apt install pcscd libpcsclite1
+sudo apt install pcscd
 ```
 
 接著安裝好您讀卡機的驅動程式。
