@@ -1,7 +1,7 @@
 EXE_linux_x86_64 = ./target/release/tw-nhi-icc-service
 EXE_windows_x86_64 = ./target/x86_64-pc-windows-gnu/release/tw-nhi-icc-service.exe
 EXE_windows_i686 = ./target/i686-pc-windows-gnu/release/tw-nhi-icc-service.exe
-INSTALLED_EXE = /usr/local/bin/tw-nhi-icc-service.exe
+INSTALLED_EXE = /usr/local/bin/tw-nhi-icc-service
 
 all: linux_x86_64 windows_x86_64 windows_i686
 	cp "$(EXE_linux_x86_64)" "$$(dirname "$(EXE_linux_x86_64)")/../tw-nhi-icc-service-linux-x86_64"
