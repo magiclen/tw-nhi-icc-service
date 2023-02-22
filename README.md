@@ -76,7 +76,7 @@ Options:
         ...
     ]
     ```
-    * 時間戳記(timestamp)的單位是毫秒，會以本地的時間為主，建議使用 `GMT+8`。
+    * 時間戳記(timestamp)的單位是毫秒，會使用本地的時區，建議將時區設定為 `GMT+8`。
 * GET `/version`：回傳此服務的版本，可用來檢驗此服務是否正常在監聽。回應的 Content-Type 為 `text/plain`。
 
 ## License
