@@ -23,6 +23,7 @@ Read Taiwan NHI cards via HTTP API.
 
 ```bash
 sudo apt install pcscd
+sudo systemctl enable pcscd
 ```
 
 接著安裝好您讀卡機的驅動程式。
@@ -66,13 +67,16 @@ Options:
             "full_name": "全名",
             "id_no": "身份證字號",
             "birth_date": "0000-00-00",
+            "birth_date_timestamp": 0,
             "sex": "M：男；F：女",
             "issue_date": "0000-00-00",
+            "issue_date_timestamp": 0
         },
   
         ...
     ]
     ```
+    * 時間戳記(timestamp)的單位是毫秒，會以本地的時間為主，建議使用 `GMT+8`。
 * GET `/version`：回傳此服務的版本，可用來檢驗此服務是否正常在監聽。回應的 Content-Type 為 `text/plain`。
 
 ## License

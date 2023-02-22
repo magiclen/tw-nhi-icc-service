@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 
-use chrono::NaiveDate;
+use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime};
 
 use serde::Serialize;
 
@@ -101,8 +101,10 @@ pub struct NHICardBasic {
     pub full_name: String,
     pub id_no: String,
     pub birth_date: NaiveDate,
+    pub birth_date_timestamp: i64,
     pub sex: Sex,
     pub issue_date: NaiveDate,
+    pub issue_date_timestamp: i64,
 }
 
 impl NHICardBasic {
@@ -174,8 +176,18 @@ impl NHICardBasic {
             full_name,
             id_no,
             birth_date,
+            birth_date_timestamp: NaiveDateTime::new(birth_date, NaiveTime::default())
+                .and_local_timezone(Local)
+                .latest()
+                .unwrap()
+                .timestamp_millis(),
             sex,
             issue_date,
+            issue_date_timestamp: NaiveDateTime::new(birth_date, NaiveTime::default())
+                .and_local_timezone(Local)
+                .latest()
+                .unwrap()
+                .timestamp_millis(),
         })
     }
 }
