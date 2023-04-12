@@ -1,18 +1,20 @@
-use std::error::Error;
-use std::ffi::CString;
-use std::fmt::{self, Display, Formatter};
-use std::num::ParseIntError;
-use std::string::FromUtf8Error;
+use std::{
+    error::Error,
+    ffi::CString,
+    fmt::{self, Display, Formatter},
+    num::ParseIntError,
+    string::FromUtf8Error,
+};
 
+use axum::{
+    http::header::{HeaderName, HeaderValue},
+    routing::get,
+    Json, Router,
+};
 use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime};
-
-use serde::Serialize;
-
-use axum::http::header::{HeaderName, HeaderValue};
-use axum::{routing::get, Json, Router};
-use tower_http::set_header::SetResponseHeaderLayer;
-
 use pcsc::{Card, Context, Protocols, Scope, ShareMode};
+use serde::Serialize;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 const APDU_SELECT: &[u8] =
     b"\x00\xA4\x04\x00\x10\xD1\x58\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x11\x00";
@@ -96,14 +98,14 @@ impl Sex {
 
 #[derive(Debug, Serialize)]
 pub struct NHICardBasic {
-    pub reader_name: Option<String>,
-    pub card_no: String,
-    pub full_name: String,
-    pub id_no: String,
-    pub birth_date: NaiveDate,
+    pub reader_name:          Option<String>,
+    pub card_no:              String,
+    pub full_name:            String,
+    pub id_no:                String,
+    pub birth_date:           NaiveDate,
     pub birth_date_timestamp: i64,
-    pub sex: Sex,
-    pub issue_date: NaiveDate,
+    pub sex:                  Sex,
+    pub issue_date:           NaiveDate,
     pub issue_date_timestamp: i64,
 }
 
@@ -165,7 +167,7 @@ impl NHICardBasic {
             b'F' => Sex::Female,
             _ => {
                 return Err(NHICardParseError);
-            }
+            },
         };
 
         let issue_date = Self::raw_to_naive_date(&data[50..57])?;
@@ -221,7 +223,7 @@ pub fn list_readers(pcsc_ctx: &Context) -> Result<Vec<String>, pcsc::Error> {
             Ok(name) => readers.push(String::from(name)),
             Err(err) => {
                 tracing::warn!("{err}")
-            }
+            },
         }
     }
 
@@ -259,16 +261,14 @@ pub fn read_nhi_cards(pcsc_ctx: &Context) -> Result<Vec<NHICardBasic>, pcsc::Err
     for reader in readers {
         let card = match connect_card(pcsc_ctx, reader.as_str()) {
             Ok(card) => card,
-            Err(err) => {
-                match err {
-                    pcsc::Error::NoSmartcard | pcsc::Error::RemovedCard => {
-                        continue;
-                    }
-                    _ => {
-                        return Err(err);
-                    }
-                }
-            }
+            Err(err) => match err {
+                pcsc::Error::NoSmartcard | pcsc::Error::RemovedCard => {
+                    continue;
+                },
+                _ => {
+                    return Err(err);
+                },
+            },
         };
 
         match get_nhi_data(card) {
@@ -276,17 +276,15 @@ pub fn read_nhi_cards(pcsc_ctx: &Context) -> Result<Vec<NHICardBasic>, pcsc::Err
                 basic.reader_name = Some(reader.clone());
 
                 output.push(basic);
-            }
-            Err(err) => {
-                match err {
-                    NHICardError::PCSCError(err) => {
-                        return Err(err);
-                    }
-                    NHICardError::ParseError(_) => {
-                        continue;
-                    }
-                }
-            }
+            },
+            Err(err) => match err {
+                NHICardError::PCSCError(err) => {
+                    return Err(err);
+                },
+                NHICardError::ParseError(_) => {
+                    continue;
+                },
+            },
         }
     }
 
@@ -299,7 +297,7 @@ pub async fn index_handler() -> Json<Vec<NHICardBasic>> {
         Err(err) => {
             tracing::warn!("找不到 PC/SC 服務，請確認讀卡機有連接上並安裝了正確的驅動程式：{err}");
             return Json(Vec::new());
-        }
+        },
     };
 
     let result = read_nhi_cards(&pcsc_ctx).unwrap();

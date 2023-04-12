@@ -1,20 +1,19 @@
-use std::io::{stdin, stdout, Read, Write};
-use std::net::{AddrParseError, IpAddr, SocketAddr};
-use std::process;
-use std::str::FromStr;
+use std::{
+    io::{stdin, stdout, Read, Write},
+    net::{AddrParseError, IpAddr, SocketAddr},
+    process,
+    str::FromStr,
+};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use terminal_size::terminal_size;
-
 use concat_with::concat_line;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use terminal_size::terminal_size;
+use tower_http::{
+    cors::CorsLayer,
+    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+};
 use tracing::Level;
-
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use tw_nhi_icc_service::create_app;
 
 const APP_NAME: &str = "TW NHI IC Card Service";
@@ -81,35 +80,33 @@ async fn main() {
     let args = get_args();
 
     match args.get_listening_addr() {
-        Ok(addr) => {
-            match create_app() {
-                Ok(app) => {
-                    let app = app.layer(CorsLayer::permissive()).layer(
-                        TraceLayer::new_for_http()
-                            .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                            .on_request(DefaultOnRequest::new().level(Level::INFO))
-                            .on_response(DefaultOnResponse::new().level(Level::INFO)),
-                    );
+        Ok(addr) => match create_app() {
+            Ok(app) => {
+                let app = app.layer(CorsLayer::permissive()).layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                        .on_request(DefaultOnRequest::new().level(Level::INFO))
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                );
 
-                    tracing::info!("listening on {addr}");
+                tracing::info!("listening on {addr}");
 
-                    match axum::Server::bind(&addr).serve(app.into_make_service()).await {
-                        Ok(_) => {
-                            process::exit(0);
-                        }
-                        Err(err) => {
-                            eprintln!("{err}");
-                        }
-                    }
+                match axum::Server::bind(&addr).serve(app.into_make_service()).await {
+                    Ok(_) => {
+                        process::exit(0);
+                    },
+                    Err(err) => {
+                        eprintln!("{err}");
+                    },
                 }
-                Err(err) => {
-                    eprintln!("{err}");
-                }
-            }
-        }
+            },
+            Err(err) => {
+                eprintln!("{err}");
+            },
+        },
         Err(_) => {
             eprintln!("{:?} 不是正確的 IP", args.interface);
-        }
+        },
     }
 
     press_any_key_to_continue();
@@ -129,6 +126,6 @@ fn get_args() -> Args {
         Ok(args) => args,
         Err(err) => {
             err.exit();
-        }
+        },
     }
 }

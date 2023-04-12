@@ -3,6 +3,7 @@ name = "tw-nhi-icc-service"
 version = "0.1.3"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
+rust-version = "1.59"
 repository = "https://github.com/magiclen/tw-nhi-icc-service"
 homepage = "https://magiclen.org/tw-nhi-icc-service"
 keywords = ["smart-card", "pcsc", "nhi-card", "ic-card", "taiwan"]
@@ -15,6 +16,8 @@ include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 [profile.release]
 lto = true
 codegen-units = 1
+panic = "abort"
+strip = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -30,7 +33,7 @@ enable-ansi-support = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hyper = { version = "0.14", features = ["full"] }
 tower = "0.4"
-tower-http = { version = "0.3", features = ["trace", "set-header", "cors"] }
+tower-http = { version = "0.4", features = ["trace", "set-header", "cors"] }
 axum = "0.6"
 
 pcsc = "2"
