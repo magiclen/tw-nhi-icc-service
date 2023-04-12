@@ -78,6 +78,5 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ matrix.toolchain }}
-          target: ${{ matrix.target }}
       - run: cargo test ${{ matrix.features }}
       - run: cargo doc ${{ matrix.features }}
