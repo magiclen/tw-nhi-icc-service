@@ -9,7 +9,6 @@ homepage = "https://magiclen.org/tw-nhi-icc-service"
 keywords = ["smart-card", "pcsc", "nhi-card", "ic-card", "taiwan"]
 categories = ["command-line-utilities"]
 description = "Read Taiwan NHI cards via HTTP API. 透過 HTTP API 讀取中華民國健保卡。"
-readme = "README.md"
 license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
