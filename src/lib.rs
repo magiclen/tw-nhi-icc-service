@@ -207,12 +207,7 @@ pub fn list_readers_len(pcsc_ctx: &Context) -> Result<usize, pcsc::Error> {
 pub fn list_readers(pcsc_ctx: &Context) -> Result<Vec<String>, pcsc::Error> {
     let size = list_readers_len(pcsc_ctx)?.max(2048);
 
-    let mut buffer: Vec<u8> = Vec::with_capacity(size);
-
-    #[allow(clippy::uninit_vec)]
-    unsafe {
-        buffer.set_len(size);
-    }
+    let mut buffer: Vec<u8> = vec![0u8; size];
 
     let names = pcsc_ctx.list_readers(&mut buffer)?;
 
