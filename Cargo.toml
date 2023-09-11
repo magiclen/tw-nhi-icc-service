@@ -1,9 +1,9 @@
 [package]
 name = "tw-nhi-icc-service"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
-rust-version = "1.64"
+rust-version = "1.70"
 repository = "https://github.com/magiclen/tw-nhi-icc-service"
 homepage = "https://magiclen.org/tw-nhi-icc-service"
 keywords = ["smart-card", "pcsc", "nhi-card", "ic-card", "taiwan"]
