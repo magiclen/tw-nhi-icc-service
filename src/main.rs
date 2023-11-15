@@ -1,131 +1,19 @@
-use std::{
-    io::{stdin, stdout, Read, Write},
-    net::{AddrParseError, IpAddr, SocketAddr},
-    process,
-    str::FromStr,
-};
+mod card;
+mod cli;
+mod server;
 
-use clap::{CommandFactory, FromArgMatches, Parser};
-use concat_with::concat_line;
-use terminal_size::terminal_size;
-use tower_http::{
-    cors::CorsLayer,
-    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
-};
-use tracing::Level;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tw_nhi_icc_service::create_app;
+use std::net::SocketAddr;
 
-const APP_NAME: &str = "TW NHI IC Card Service";
-const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CARGO_PKG_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+use cli::*;
+use server::*;
+use tokio::runtime;
 
-const APP_ABOUT: &str = concat!(
-    "透過 HTTP API 讀取中華民國健保卡。\n\nEXAMPLES:\n",
-    concat_line!(prefix "tw-nhi-icc-service ",
-        "                     # 啟動 HTTP 服務，監聽 127.0.0.1:58113",
-        "-i 0.0.0.0 -p 12345  # 啟動 HTTP 服務，監聽 0.0.0.0:12345",
-    )
-);
-
-const PORT: u16 = 58113;
-
-#[derive(Debug, Parser)]
-#[command(name = APP_NAME)]
-#[command(term_width = terminal_size().map(|(width, _)| width.0 as usize).unwrap_or(0))]
-#[command(version = CARGO_PKG_VERSION)]
-#[command(author = CARGO_PKG_AUTHORS)]
-#[command(after_help = "Enjoy it! https://magiclen.org")]
-struct Args {
-    /// 要監聽的網路介面 IP
-    #[arg(short, long)]
-    #[arg(visible_aliases = ["ip"])]
-    #[arg(default_value_t = String::from("127.0.0.1"))]
-    interface: String,
-
-    /// 要監聽的連接埠
-    #[arg(short, long)]
-    #[arg(default_value_t = PORT)]
-    port: u16,
-}
-
-impl Args {
-    #[inline]
-    pub fn get_listening_addr(&self) -> Result<SocketAddr, AddrParseError> {
-        Ok(SocketAddr::new(IpAddr::from_str(self.interface.as_str())?, self.port))
-    }
-}
-
-fn press_any_key_to_continue() {
-    let mut stdout = stdout();
-    write!(stdout, "按下 Enter 繼續……").unwrap();
-    stdout.flush().unwrap();
-
-    let _ = stdin().read(&mut [0u8]).unwrap();
-}
-
-#[tokio::main]
-async fn main() {
-    let mut ansi_color = atty::is(atty::Stream::Stdout);
-
-    if ansi_color && enable_ansi_support::enable_ansi_support().is_err() {
-        ansi_color = false;
-    }
-
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_ansi(ansi_color))
-        .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
-        .init();
-
+fn main() -> anyhow::Result<()> {
     let args = get_args();
 
-    match args.get_listening_addr() {
-        Ok(addr) => match create_app() {
-            Ok(app) => {
-                let app = app.layer(CorsLayer::permissive()).layer(
-                    TraceLayer::new_for_http()
-                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                        .on_request(DefaultOnRequest::new().level(Level::INFO))
-                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
-                );
+    let socket_addr = SocketAddr::new(args.interface, args.port);
 
-                tracing::info!("listening on {addr}");
+    let runtime = runtime::Runtime::new()?;
 
-                match axum::Server::bind(&addr).serve(app.into_make_service()).await {
-                    Ok(_) => {
-                        process::exit(0);
-                    },
-                    Err(err) => {
-                        eprintln!("{err}");
-                    },
-                }
-            },
-            Err(err) => {
-                eprintln!("{err}");
-            },
-        },
-        Err(_) => {
-            eprintln!("{:?} 不是正確的 IP", args.interface);
-        },
-    }
-
-    press_any_key_to_continue();
-    process::exit(-1);
-}
-
-fn get_args() -> Args {
-    let args = Args::command();
-
-    let about = format!("{APP_NAME} {CARGO_PKG_VERSION}\n{CARGO_PKG_AUTHORS}\n{APP_ABOUT}");
-
-    let args = args.about(about);
-
-    let matches = args.get_matches();
-
-    match Args::from_arg_matches(&matches) {
-        Ok(args) => args,
-        Err(err) => {
-            err.exit();
-        },
-    }
+    runtime.block_on(async move { server_main(socket_addr).await })
 }

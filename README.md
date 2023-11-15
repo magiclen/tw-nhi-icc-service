@@ -42,14 +42,14 @@ sudo apt install libpcsclite-dev
 
 ```text
 EXAMPLES:
-tw-nhi-icc-service                      # 啟動 HTTP 服務，監聽 127.0.0.1:58113
-tw-nhi-icc-service -i 0.0.0.0 -p 12345  # 啟動 HTTP 服務，監聽 0.0.0.0:12345
+tw-nhi-icc-service                       # 啟動 HTTP 服務，監聽 127.0.0.1:58113
+tw-nhi-icc-service -i 0.0.0.0 -p 12345   # 啟動 HTTP 服務，監聽 0.0.0.0:12345
 
 Usage: tw-nhi-icc-service [OPTIONS]
 
 Options:
   -i, --interface <INTERFACE>  要監聽的網路介面 IP [default: 127.0.0.1] [aliases: ip]
-  -p, --port <PORT>            要監聽的連接埠 [default: 58113]
+  -p, --port <PORT>            要監聽的連接埠 [default: 8000]
   -h, --help                   Print help
   -V, --version                Print version
 ```

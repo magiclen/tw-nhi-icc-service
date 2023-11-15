@@ -1,6 +1,6 @@
 [package]
 name = "tw-nhi-icc-service"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
 rust-version = "1.70"
@@ -21,19 +21,19 @@ strip = true
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 concat-with = "0.2"
-terminal_size = "0.2"
+terminal_size = "0.3"
 
-serde = { version = "1", features = ["derive"] }
+anyhow = "1"
 
 tokio = { version = "1", features = ["full"] }
+
 tracing = "0.1"
-atty = "0.2"
 enable-ansi-support = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-hyper = { version = "0.14", features = ["full"] }
-tower = "0.4"
-tower-http = { version = "0.4", features = ["trace", "set-header", "cors"] }
+
+serde = { version = "1", features = ["derive"] }
 axum = "0.6"
+tower-http = { version = "0.4", features = ["trace", "set-header", "cors"] }
 
 pcsc = "2"
 chrono = { version = "0.4", features = ["serde"] }
