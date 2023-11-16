@@ -15,5 +15,10 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = runtime::Runtime::new()?;
 
-    runtime.block_on(async move { server_main(socket_addr).await })
+    runtime.block_on(async move {
+        server_main(socket_addr, AppState {
+            default_card_fetch_interval: args.default_ws_card_fetch_interval,
+        })
+        .await
+    })
 }

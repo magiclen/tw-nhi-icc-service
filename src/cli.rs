@@ -28,16 +28,21 @@ const APP_ABOUT: &str = concat!(
 #[command(author = CARGO_PKG_AUTHORS)]
 #[command(after_help = AFTER_HELP)]
 pub struct CLIArgs {
-    /// 要監聽的網路介面 IP
     #[arg(short, long, visible_alias = "ip")]
     #[arg(value_parser = parse_ip_addr)]
     #[arg(default_value = "127.0.0.1")]
+    #[arg(help = "要監聽的網路介面 IP")]
     pub interface: IpAddr,
 
-    /// 要監聽的連接埠
     #[arg(short, long)]
     #[arg(default_value = "8000")]
+    #[arg(help = "要監聽的連接埠")]
     pub port: u16,
+
+    #[arg(long, visible_alias = "interval", value_name = "MILLI_SECONDS")]
+    #[arg(default_value = "3000")]
+    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（毫秒），可在連線中即時更改")]
+    pub default_ws_card_fetch_interval: u64,
 }
 
 #[inline]

@@ -145,9 +145,7 @@ pub async fn fetch_nhi_cards_json_string() -> Result<String, pcsc::Error> {
 
             Ok(json)
         },
-        Err(_) => {
-            Ok(get_nhi_cards_json_string().await)
-        },
+        Err(_) => Ok(get_nhi_cards_json_string().await),
     }
 }
 

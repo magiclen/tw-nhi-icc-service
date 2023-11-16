@@ -58,7 +58,7 @@ Options:
 
 啟動 HTTP 服務後，可以存取以下的端點：
 
-* GET `/`：讀取所有讀卡機的健保卡中的基本資料。回應的 Content-Type 為 `application/json`。JSON 格式如下：
+* `GET /`：讀取所有讀卡機的健保卡中的基本資料。回應的 Content-Type 為 `application/json`。JSON 格式如下：
     ```json
     [
         {
@@ -77,7 +77,17 @@ Options:
     ]
     ```
     * 時間戳記(timestamp)的單位是毫秒，會使用本地的時區，建議將時區設定為 `GMT+8`。
-* GET `/version`：回傳此服務的版本，可用來檢驗此服務是否正常在監聽。回應的 Content-Type 為 `text/plain`。
+* `GET /version`：回傳此服務的版本，可用來檢驗此服務是否正常在監聽。回應的 Content-Type 為 `application/json`。JSON 格式如下：
+    ```json
+    {
+        "major": 0,
+        "minor": 1,
+        "patch": 5,
+        "pre": "",
+        "text": "0.1.5"
+    }
+    ```
+* `GET /ws`：**WebSocket 端點**。查詢中可以代入 `interval` 欄位來設定伺服器回傳所有讀卡機的健保卡中的基本資料的時間間隔，單位為毫秒。回傳的資料格式請見 `GET /`。客戶端也可以在連線時傳送要使用的時間間隔毫秒數來更改回傳設定。
 
 ## License
 
