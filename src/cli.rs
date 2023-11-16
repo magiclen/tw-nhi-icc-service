@@ -41,7 +41,7 @@ pub struct CLIArgs {
 
     #[arg(long, visible_alias = "interval", value_name = "MILLI_SECONDS")]
     #[arg(default_value = "3000")]
-    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（毫秒），可在連線中即時更改")]
+    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（毫秒）")]
     pub default_ws_card_fetch_interval: u64,
 }
 
