@@ -1,9 +1,16 @@
-use std::{io, io::IsTerminal, net::SocketAddr};
+use std::{
+    io,
+    io::IsTerminal,
+    net::SocketAddr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use axum::{
-    http::{header, HeaderValue},
+    extract::{ws::Message, WebSocketUpgrade},
+    http::{header, HeaderValue, StatusCode},
+    response::IntoResponse,
     routing::get,
-    Json, Router,
+    Router,
 };
 use tower_http::{
     cors::CorsLayer,
@@ -13,20 +20,28 @@ use tower_http::{
 use tracing::Level;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use crate::card::{pcsc_ctx, read_nhi_cards, NHICardBasic};
+use crate::card::*;
 
-pub async fn index_handler() -> Json<Vec<NHICardBasic>> {
-    let pcsc_ctx = match pcsc_ctx() {
-        Ok(pcsc_ctx) => pcsc_ctx,
-        Err(err) => {
-            tracing::warn!("找不到 PC/SC 服務，請確認讀卡機有連接上並安裝了正確的驅動程式：{err}");
-            return Json(Vec::new());
-        },
-    };
+static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let result = read_nhi_cards(&pcsc_ctx).unwrap();
+async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(|mut socket| async move {
+        let id = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    Json(result)
+        tracing::info!(target: "websocket", id, "連線建立");
+
+        if socket.send(Message::Ping(vec![1, 2, 3])).await.is_err() {
+            return;
+        }
+
+        tracing::info!(target: "websocket", id, "連線結束");
+    })
+}
+
+pub async fn index_handler() -> impl IntoResponse {
+    let json_string = fetch_nhi_cards_json_string().await.unwrap_or_else(|_| String::from("[]"));
+
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/json; charset=utf-8")], json_string)
 }
 
 pub async fn version_handler() -> &'static str {
@@ -36,6 +51,7 @@ pub async fn version_handler() -> &'static str {
 fn create_app() -> Router {
     Router::new()
         .route("/", get(index_handler))
+        .route("/ws", get(ws_handler))
         .route("/version", get(version_handler))
         .layer(CorsLayer::permissive())
         .layer(SetResponseHeaderLayer::overriding(
