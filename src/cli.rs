@@ -39,9 +39,9 @@ pub struct CLIArgs {
     #[arg(help = "要監聽的連接埠")]
     pub port: u16,
 
-    #[arg(long, visible_alias = "interval", value_name = "MILLI_SECONDS")]
-    #[arg(default_value = "3000")]
-    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（毫秒）")]
+    #[arg(long, visible_alias = "interval", value_name = "SECONDS")]
+    #[arg(default_value = "3")]
+    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（秒）")]
     pub default_ws_card_fetch_interval: u64,
 }
 

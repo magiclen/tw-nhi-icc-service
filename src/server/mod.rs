@@ -19,7 +19,7 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::{task, time};
+use tokio::{sync::mpsc, task, time};
 use tower_http::{
     cors::CorsLayer,
     set_header::SetResponseHeaderLayer,
@@ -32,10 +32,9 @@ use crate::card::*;
 
 static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-static RETRY_COUNT: usize = 2;
-static RETRY_INTERVAL: Duration = Duration::from_millis(1000);
-
 static mut VERSION: String = String::new();
+
+static PING_INTERVAL: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -66,76 +65,98 @@ async fn ws_handler(
 
         let (mut sender, mut receiver) = socket.split();
 
-        let t_m = task::spawn(async move {
-            loop {
+        let (sender_ctrl, mut receiver_ctrl) = mpsc::channel::<()>(1);
+
+        let t_sender = task::spawn(async move {
+            'outer: loop {
                 let t = SystemTime::now();
 
                 let json_string =
                     fetch_nhi_cards_json_string().await.unwrap_or_else(|_| String::from("[]"));
 
-                if let Err(error) = sender.send(Message::Text(json_string.clone())).await {
-                    let mut success = false;
+                tracing::debug!(target: "websocket", id, "send {json_string:?}");
 
-                    for _ in 0..RETRY_COUNT {
-                        time::sleep(RETRY_INTERVAL).await;
+                if let Err(error) = sender.send(Message::Text(json_string)).await {
+                    tracing::info!(target: "websocket", id, ?error);
 
-                        if sender.send(Message::Text(json_string.clone())).await.is_ok() {
-                            success = true;
+                    sender_ctrl.send(()).await.unwrap();
 
-                            break;
-                        }
-                    }
-
-                    if !success {
-                        tracing::info!(target: "websocket", id, ?error);
-
-                        let _ = sender.close().await;
-
-                        break;
-                    }
+                    break;
                 }
 
-                let d = t.elapsed().unwrap();
+                // wait and ping
+                loop {
+                    let d = t.elapsed().unwrap();
 
-                let card_fetch_interval =
-                    Duration::from_millis(card_fetch_interval.load(Ordering::Relaxed));
+                    let card_fetch_interval =
+                        Duration::from_secs(card_fetch_interval.load(Ordering::Relaxed));
 
-                if d < card_fetch_interval {
-                    time::sleep(card_fetch_interval - d).await;
+                    if d >= card_fetch_interval {
+                        break;
+                    }
+
+                    let sleep_interval = card_fetch_interval - d;
+
+                    if sleep_interval <= PING_INTERVAL {
+                        time::sleep(sleep_interval).await;
+
+                        break;
+                    } else {
+                        time::sleep(PING_INTERVAL).await;
+
+                        tracing::debug!(target: "websocket", id, "send ping");
+
+                        if let Err(error) = sender.send(Message::Ping(vec![1, 2, 3])).await {
+                            tracing::info!(target: "websocket", id, ?error);
+
+                            sender_ctrl.send(()).await.unwrap();
+
+                            break 'outer;
+                        }
+                    }
                 }
             }
         });
 
-        while let Some(message) = receiver.next().await {
-            tracing::debug!(target: "websocket", id, ?message);
+        loop {
+            tokio::select! {
+                _ = receiver_ctrl.recv() => break,
+                message = receiver.next() => {
+                    if let Some(message) = message {
+                        tracing::debug!(target: "websocket", id, ?message, "receive");
 
-            match message {
-                Ok(message) => match message {
-                    Message::Close(reason) => {
-                        if let Some(reason) = reason {
-                            tracing::info!(target: "websocket", id, ?reason);
+                        match message {
+                            Ok(message) => match message {
+                                Message::Close(reason) => {
+                                    if let Some(reason) = reason {
+                                        tracing::info!(target: "websocket", id, ?reason);
+                                    }
+
+                                    break;
+                                },
+                                Message::Text(s) => {
+                                    if s.eq_ignore_ascii_case("close") {
+                                        break;
+                                    } else if let Ok(seconds) = s.parse::<u64>() {
+                                        card_fetch_interval_a.store(seconds, Ordering::Relaxed);
+                                    }
+                                },
+                                _ => (),
+                            },
+                            Err(error) => {
+                                tracing::info!(target: "websocket", id, ?error);
+
+                                break;
+                            },
                         }
-
+                    } else {
                         break;
-                    },
-                    Message::Text(s) => {
-                        if s.eq_ignore_ascii_case("close") {
-                            break;
-                        } else if let Ok(millisecond) = s.parse::<u64>() {
-                            card_fetch_interval_a.store(millisecond, Ordering::Relaxed);
-                        }
-                    },
-                    _ => (),
-                },
-                Err(error) => {
-                    tracing::info!(target: "websocket", id, ?error);
-
-                    break;
-                },
+                    }
+                }
             }
         }
 
-        t_m.abort();
+        t_sender.abort();
 
         tracing::info!(target: "websocket", id, "連線結束");
     })

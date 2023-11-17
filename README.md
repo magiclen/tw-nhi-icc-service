@@ -50,7 +50,7 @@ Usage: tw-nhi-icc-service [OPTIONS]
 Options:
   -i, --interface <INTERFACE>                           要監聽的網路介面 IP [default: 127.0.0.1] [aliases: ip]
   -p, --port <PORT>                                     要監聽的連接埠 [default: 8000]
-      --default-ws-card-fetch-interval <MILLI_SECONDS>  WebSocket 回傳卡片資料的預設時間間隔（毫秒） [default: 3000] [aliases: interval]
+      --default-ws-card-fetch-interval <MILLI_SECONDS>  WebSocket 回傳卡片資料的預設時間間隔（秒） [default: 3000] [aliases: interval]
   -h, --help                                            Print help
   -V, --version                                         Print version
 ```
@@ -88,7 +88,7 @@ Options:
         "text": "0.1.5"
     }
     ```
-* `GET /ws`：**WebSocket 端點**。查詢中可以代入 `interval` 欄位來設定伺服器回傳所有讀卡機的健保卡中的基本資料的時間間隔，單位為毫秒。回傳的資料格式請見 `GET /`。客戶端也可以在連線時傳送要使用的時間間隔毫秒數來更改回傳設定。
+* `GET /ws`：**WebSocket 端點**。查詢中可以代入 `interval` 欄位來設定伺服器回傳所有讀卡機的健保卡中的基本資料的時間間隔，單位為秒。回傳的資料格式請見 `GET /`。客戶端也可以在連線時傳送要使用的時間間隔秒數來更改回傳設定。
 
 ## License
 
