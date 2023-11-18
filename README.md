@@ -90,6 +90,10 @@ Options:
     ```
 * `GET /ws`：**WebSocket 端點**。查詢中可以代入 `interval` 欄位來設定伺服器回傳所有讀卡機的健保卡中的基本資料的時間間隔，單位為秒。回傳的資料格式請見 `GET /`。客戶端也可以在連線時傳送要使用的時間間隔秒數來更改回傳設定。
 
+## 客戶端函式庫
+
+* [`tw-nhi-icc`](https://github.com/magiclen/tw-nhi-icc)：在 JavaScript/TypeScript 中，讀取中華民國健保卡。
+
 ## License
 
 [MIT](LICENSE)
