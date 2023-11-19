@@ -34,7 +34,7 @@ static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 static mut VERSION: String = String::new();
 
-const PING_INTERVAL_SECONDS: u64 = 20;
+const PING_INTERVAL_SECONDS: u64 = 25;
 const PING_PONG_DELAY_TIMEOUT_SECONDS: u64 = 10;
 
 static PING_INTERVAL: Duration = Duration::from_secs(PING_INTERVAL_SECONDS);
@@ -89,7 +89,14 @@ async fn ws_handler(
                 let t = Instant::now();
 
                 let json_string =
-                    fetch_nhi_cards_json_string().await.unwrap_or_else(|_| String::from("[]"));
+                    match time::timeout(PING_INTERVAL, fetch_nhi_cards_json_string()).await {
+                        Ok(result) => result.unwrap_or_else(|_| String::from("[]")),
+                        Err(_) => {
+                            tracing::warn!(target: "websocket", id, "卡片讀取逾時！");
+
+                            String::from("[]")
+                        },
+                    };
 
                 tracing::debug!(target: "websocket", id, "send {json_string:?}");
 
