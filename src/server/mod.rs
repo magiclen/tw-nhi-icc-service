@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Once,
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use axum::{
@@ -34,7 +34,12 @@ static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 static mut VERSION: String = String::new();
 
-static PING_INTERVAL: Duration = Duration::from_secs(20);
+const PING_INTERVAL_SECONDS: u64 = 20;
+const PING_PONG_DELAY_TIMEOUT_SECONDS: u64 = 10;
+
+static PING_INTERVAL: Duration = Duration::from_secs(PING_INTERVAL_SECONDS);
+static PONG_INTERVAL: Duration =
+    Duration::from_secs(PING_INTERVAL_SECONDS + PING_PONG_DELAY_TIMEOUT_SECONDS);
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -44,6 +49,11 @@ pub struct AppState {
 #[derive(Deserialize)]
 struct WSQuery {
     interval: Option<u64>,
+}
+
+#[inline]
+fn now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
 async fn ws_handler(
@@ -61,35 +71,45 @@ async fn ws_handler(
 
         tracing::info!(target: "websocket", id, "連線建立");
 
-        let card_fetch_interval_a = card_fetch_interval.clone();
+        let card_fetch_interval_sender = card_fetch_interval.clone();
 
         let (mut sender, mut receiver) = socket.split();
 
         let (sender_ctrl, mut receiver_ctrl) = mpsc::channel::<()>(1);
 
+        let sender_ctrl = Arc::new(sender_ctrl);
+        let sender_ctrl_pong = sender_ctrl.clone();
+
+        let last_message_time = Arc::new(AtomicU64::new(now()));
+        let last_message_time_sender = last_message_time.clone();
+        let last_message_time_pong = last_message_time.clone();
+
         let t_sender = task::spawn(async move {
             'outer: loop {
-                let t = SystemTime::now();
+                let t = Instant::now();
 
                 let json_string =
                     fetch_nhi_cards_json_string().await.unwrap_or_else(|_| String::from("[]"));
 
                 tracing::debug!(target: "websocket", id, "send {json_string:?}");
 
-                if let Err(error) = sender.send(Message::Text(json_string)).await {
-                    tracing::info!(target: "websocket", id, ?error);
+                match sender.send(Message::Text(json_string)).await {
+                    Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
+                    Err(error) => {
+                        tracing::info!(target: "websocket", id, ?error);
 
-                    sender_ctrl.send(()).await.unwrap();
+                        sender_ctrl.send(()).await.unwrap();
 
-                    break;
+                        break;
+                    },
                 }
 
                 // wait and ping
                 loop {
-                    let d = t.elapsed().unwrap();
+                    let d = t.elapsed();
 
                     let card_fetch_interval =
-                        Duration::from_secs(card_fetch_interval.load(Ordering::Relaxed));
+                        Duration::from_secs(card_fetch_interval_sender.load(Ordering::Relaxed));
 
                     if d >= card_fetch_interval {
                         break;
@@ -106,14 +126,33 @@ async fn ws_handler(
 
                         tracing::debug!(target: "websocket", id, "send ping");
 
-                        if let Err(error) = sender.send(Message::Ping(vec![1, 2, 3])).await {
-                            tracing::info!(target: "websocket", id, ?error);
+                        match sender.send(Message::Ping(vec![1, 2, 3])).await {
+                            Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
+                            Err(error) => {
+                                tracing::info!(target: "websocket", id, ?error);
 
-                            sender_ctrl.send(()).await.unwrap();
+                                sender_ctrl.send(()).await.unwrap();
 
-                            break 'outer;
+                                break 'outer;
+                            },
                         }
                     }
+                }
+            }
+        });
+
+        let t_pong = task::spawn(async move {
+            loop {
+                time::sleep(PONG_INTERVAL).await;
+
+                let last_pong = last_message_time_pong.load(Ordering::Relaxed);
+
+                if now() - last_pong > PONG_INTERVAL.as_millis() as u64 {
+                    tracing::info!(target: "websocket", id, "客戶端沒有回應");
+
+                    sender_ctrl_pong.send(()).await.unwrap();
+
+                    break;
                 }
             }
         });
@@ -124,6 +163,8 @@ async fn ws_handler(
                 message = receiver.next() => {
                     if let Some(message) = message {
                         tracing::debug!(target: "websocket", id, ?message, "receive");
+
+                        last_message_time.store(now(), Ordering::Relaxed);
 
                         match message {
                             Ok(message) => match message {
@@ -138,7 +179,7 @@ async fn ws_handler(
                                     if s.eq_ignore_ascii_case("close") {
                                         break;
                                     } else if let Ok(seconds) = s.parse::<u64>() {
-                                        card_fetch_interval_a.store(seconds, Ordering::Relaxed);
+                                        card_fetch_interval.store(seconds, Ordering::Relaxed);
                                     }
                                 },
                                 _ => (),
@@ -157,6 +198,7 @@ async fn ws_handler(
         }
 
         t_sender.abort();
+        t_pong.abort();
 
         tracing::info!(target: "websocket", id, "連線結束");
     })
