@@ -270,9 +270,9 @@ pub async fn server_main(socket_addr: SocketAddr, state: AppState) -> anyhow::Re
 
     let app = create_app(state);
 
+    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
     tracing::info!("listening on http://{socket_addr}");
-
-    axum::Server::bind(&socket_addr).serve(app.into_make_service()).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

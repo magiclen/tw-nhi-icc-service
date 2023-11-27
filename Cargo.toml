@@ -1,6 +1,6 @@
 [package]
 name = "tw-nhi-icc-service"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Magic Len <len@magiclen.org>"]
 edition = "2021"
 rust-version = "1.70"
@@ -35,8 +35,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-axum = { version = "0.6", features = ["ws"] }
-tower-http = { version = "0.4", features = ["trace", "set-header", "cors"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["trace", "set-header", "cors"] }
 
 once_cell = "1"
 pcsc = "2"
