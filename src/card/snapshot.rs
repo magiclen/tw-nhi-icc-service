@@ -1,6 +1,52 @@
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::Serialize;
+use utoipa::ToSchema;
 
 use super::NHICardBasic;
+
+/// 讀卡機的狀態。
+///
+/// - `empty`：沒有插卡。
+/// - `nhi_card`：讀到健保卡，資料在 `card` 欄位。
+/// - `unsupported_card`：有卡片，但不是健保卡（例如 SAM 卡或晶片金融卡）。
+/// - `error`：讀卡失敗，原因在 `error` 欄位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderState {
+    Empty,
+    NhiCard,
+    UnsupportedCard,
+    Error,
+}
+
+impl ReaderState {
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::NhiCard => "nhi_card",
+            Self::UnsupportedCard => "unsupported_card",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// 服務的狀態。
+///
+/// - `ok`：PC/SC 服務可以使用。沒有任何讀卡機時，`readers` 為空陣列。
+/// - `pcsc_unavailable`：PC/SC 服務無法使用，原因在 `error` 欄位。服務會自動重試，恢復後就會變回 `ok`。Windows 在沒有接任何讀卡機時，系統的智慧卡服務可能沒有啟動，也會是這個狀態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceStatus {
+    Ok,
+    PcscUnavailable,
+}
+
+/// 訊息的種類，目前只有 `snapshot`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageType {
+    Snapshot,
+}
 
 /// 一台讀卡機目前的狀態。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,12 +63,12 @@ pub enum ReaderStatus {
 
 impl ReaderStatus {
     #[inline]
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn state(&self) -> ReaderState {
         match self {
-            Self::Empty => "empty",
-            Self::NHICard(_) => "nhi_card",
-            Self::UnsupportedCard => "unsupported_card",
-            Self::Error(_) => "error",
+            Self::Empty => ReaderState::Empty,
+            Self::NHICard(_) => ReaderState::NhiCard,
+            Self::UnsupportedCard => ReaderState::UnsupportedCard,
+            Self::Error(_) => ReaderState::Error,
         }
     }
 }
@@ -34,25 +80,6 @@ pub struct Reader {
     pub status: ReaderStatus,
 }
 
-impl Serialize for Reader {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (card, error) = match &self.status {
-            ReaderStatus::NHICard(card) => (Some(card), None),
-            ReaderStatus::Error(error) => (None, Some(format!("{error:?}"))),
-            ReaderStatus::Empty | ReaderStatus::UnsupportedCard => (None, None),
-        };
-
-        let mut s = serializer.serialize_struct("Reader", 4)?;
-
-        s.serialize_field("name", &self.name)?;
-        s.serialize_field("state", self.status.as_str())?;
-        s.serialize_field("card", &card)?;
-        s.serialize_field("error", &error)?;
-
-        s.end()
-    }
-}
-
 /// 整個服務的讀卡狀態。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotStatus {
@@ -62,23 +89,73 @@ pub enum SnapshotStatus {
     PcscUnavailable(pcsc::Error),
 }
 
-impl Serialize for SnapshotStatus {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (status, error, readers) = match self {
-            Self::Ok(readers) => ("ok", None, readers.as_slice()),
-            Self::PcscUnavailable(error) => {
-                ("pcsc_unavailable", Some(format!("{error:?}")), [].as_slice())
+/// 一台讀卡機。
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(as = Reader)]
+pub struct ReaderJSON {
+    /// 讀卡機名稱。
+    #[schema(examples("ACS ACR39U ICC Reader 00 00"))]
+    name:  String,
+    state: ReaderState,
+    /// 健保卡的基本資料。只有 `state` 為 `nhi_card` 時才有值，否則為 `null`。
+    #[schema(required = true)]
+    card:  Option<NHICardBasic>,
+    /// PC/SC 的錯誤名稱。只有 `state` 為 `error` 時才有值，否則為 `null`。例如 `SharingViolation` 代表卡片正被其他程式獨占使用，服務會自動重試。
+    #[schema(required = true, examples("SharingViolation"))]
+    error: Option<String>,
+}
+
+impl From<&Reader> for ReaderJSON {
+    #[inline]
+    fn from(reader: &Reader) -> Self {
+        let (card, error) = match &reader.status {
+            ReaderStatus::NHICard(card) => (Some(card.clone()), None),
+            ReaderStatus::Error(error) => (None, Some(format!("{error:?}"))),
+            ReaderStatus::Empty | ReaderStatus::UnsupportedCard => (None, None),
+        };
+
+        Self {
+            name: reader.name.clone(),
+            state: reader.status.state(),
+            card,
+            error,
+        }
+    }
+}
+
+/// 所有讀卡機目前的狀態。`GET /` 的回應與 WebSocket 的訊息都是這個格式。
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(as = Snapshot)]
+pub struct SnapshotJSON {
+    /// 訊息的種類，固定為 `snapshot`。
+    #[serde(rename = "type")]
+    kind:    MessageType,
+    status:  ServiceStatus,
+    /// PC/SC 的錯誤名稱。只有 `status` 為 `pcsc_unavailable` 時才有值，否則為 `null`。
+    #[schema(required = true, examples("NoService"))]
+    error:   Option<String>,
+    /// 所有讀卡機。`status` 為 `pcsc_unavailable` 時為空陣列。
+    readers: Vec<ReaderJSON>,
+}
+
+impl From<&SnapshotStatus> for SnapshotJSON {
+    #[inline]
+    fn from(status: &SnapshotStatus) -> Self {
+        let (status, error, readers) = match status {
+            SnapshotStatus::Ok(readers) => {
+                (ServiceStatus::Ok, None, readers.iter().map(ReaderJSON::from).collect())
+            },
+            SnapshotStatus::PcscUnavailable(error) => {
+                (ServiceStatus::PcscUnavailable, Some(format!("{error:?}")), Vec::new())
             },
         };
 
-        let mut s = serializer.serialize_struct("Snapshot", 4)?;
-
-        s.serialize_field("type", "snapshot")?;
-        s.serialize_field("status", status)?;
-        s.serialize_field("error", &error)?;
-        s.serialize_field("readers", readers)?;
-
-        s.end()
+        Self {
+            kind: MessageType::Snapshot,
+            status,
+            error,
+            readers,
+        }
     }
 }
 
@@ -92,7 +169,7 @@ pub struct Snapshot {
 impl Snapshot {
     #[inline]
     pub fn new(status: SnapshotStatus) -> Self {
-        let json = serde_json::to_string(&status).unwrap();
+        let json = serde_json::to_string(&SnapshotJSON::from(&status)).unwrap();
 
         Self {
             status,

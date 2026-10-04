@@ -119,6 +119,8 @@ Options:
     * 超過 `interval` 秒都沒有送出任何訊息時，重送目前的狀態。客戶端可以據此判斷連線是否還活著，例如超過兩倍的 `interval` 都沒有收到訊息時就重新連線。
 
     查詢中可以代入 `interval` 欄位來設定上述的時間間隔，單位為秒，最小值為 `1`，預設值由 `--default-ws-card-fetch-interval` 決定。客戶端也可以在連線時傳送秒數來更改時間間隔，或是傳送 `close` 來關閉連線。服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。
+* `GET /docs`：**Swagger UI**。可以在瀏覽器中查看 API 文件，並直接測試 `GET /` 與 `GET /version`。
+* `GET /docs/json`：OpenAPI 3.1 文件（JSON）。
 
 ## 客戶端函式庫
 

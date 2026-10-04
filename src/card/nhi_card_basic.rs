@@ -8,6 +8,7 @@ use std::{
 
 use chrono::prelude::*;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 #[derive(Debug)]
 pub struct NHICardParseError;
@@ -35,7 +36,8 @@ impl From<ParseIntError> for NHICardParseError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// 性別。`M` 為男性，`F` 為女性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 pub enum Sex {
     #[serde(rename = "M")]
     Male,
@@ -43,15 +45,31 @@ pub enum Sex {
     Female,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// 健保卡的基本資料。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = NHICard)]
 pub struct NHICardBasic {
+    /// 卡號。
+    #[schema(examples("000012345678"))]
     pub card_no:              String,
+    /// 姓名。無法以 Big5 解碼的字（例如部分罕用字）會以 U+FFFD（`�`）取代。
+    #[schema(examples("王小明"))]
     pub full_name:            String,
+    /// 身份證字號。
+    #[schema(examples("A123456789"))]
     pub id_no:                String,
+    /// 出生日期。
+    #[schema(examples("1990-01-01"))]
     pub birth_date:           NaiveDate,
+    /// 出生日期在台灣時區（UTC+8）午夜的時間戳記（毫秒），與伺服器的時區無關。
+    #[schema(examples(631123200000i64))]
     pub birth_date_timestamp: i64,
     pub sex:                  Sex,
+    /// 發卡日期。
+    #[schema(examples("2020-01-01"))]
     pub issue_date:           NaiveDate,
+    /// 發卡日期在台灣時區（UTC+8）午夜的時間戳記（毫秒），與伺服器的時區無關。
+    #[schema(examples(1577808000000i64))]
     pub issue_date_timestamp: i64,
 }
 

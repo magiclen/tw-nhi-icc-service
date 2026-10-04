@@ -70,7 +70,7 @@ impl MonitoredReader {
                     tracing::warn!(target: "card", reader = self.reader.name, ?error);
                 },
                 _ => {
-                    tracing::info!(target: "card", reader = self.reader.name, state = status.as_str());
+                    tracing::info!(target: "card", reader = self.reader.name, state = status.state().as_str());
                 },
             }
 

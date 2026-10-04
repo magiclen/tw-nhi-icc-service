@@ -1,3 +1,5 @@
+mod docs;
+
 use std::{
     future, io,
     io::IsTerminal,
@@ -20,8 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use tokio::{
     signal,
     sync::watch,
@@ -34,20 +35,22 @@ use tower_http::{
 };
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::card::*;
 
 static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {
-    json!({
-        "text": env!("CARGO_PKG_VERSION"),
-        "major": env!("CARGO_PKG_VERSION_MAJOR").parse::<u32>().unwrap(),
-        "minor": env!("CARGO_PKG_VERSION_MINOR").parse::<u32>().unwrap(),
-        "patch": env!("CARGO_PKG_VERSION_PATCH").parse::<u32>().unwrap(),
-        "pre": env!("CARGO_PKG_VERSION_PRE"),
-    })
-    .to_string()
+    let version = Version {
+        text:  env!("CARGO_PKG_VERSION"),
+        major: env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap(),
+        minor: env!("CARGO_PKG_VERSION_MINOR").parse().unwrap(),
+        patch: env!("CARGO_PKG_VERSION_PATCH").parse().unwrap(),
+        pre:   env!("CARGO_PKG_VERSION_PRE"),
+    };
+
+    serde_json::to_string(&version).unwrap()
 });
 
 /// WebSocket 送出 ping 的間隔。
@@ -113,8 +116,28 @@ impl Drop for WSConnectionGuard {
     }
 }
 
-#[derive(Deserialize)]
+/// 服務的版本。
+#[derive(Serialize, ToSchema)]
+struct Version {
+    /// 完整的版本字串。
+    #[schema(value_type = String, examples("0.3.0"))]
+    text:  &'static str,
+    #[schema(examples(0))]
+    major: u32,
+    #[schema(examples(3))]
+    minor: u32,
+    #[schema(examples(0))]
+    patch: u32,
+    /// 預發布版本的標籤，沒有時為空字串。
+    #[schema(value_type = String, examples(""))]
+    pre:   &'static str,
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct WSQuery {
+    /// 讀卡狀態沒有變化時，重送目前狀態的間隔（秒）。小於 1 時視為 1；沒有指定時使用 `--default-ws-card-fetch-interval` 的值（預設為 3）。
+    #[param(minimum = 1, example = 3)]
     interval: Option<u64>,
 }
 
@@ -159,6 +182,33 @@ async fn send_close(socket: &mut WebSocket, id: u64, code: u16, reason: &'static
     send(socket, id, Message::Close(Some(frame))).await;
 }
 
+/// 以 WebSocket 接收讀卡狀態
+///
+/// 這個端點必須以 WebSocket 連線，無法用 Swagger UI 的 Try it out 測試。
+///
+/// 伺服器會以文字訊息送出 `Snapshot` 格式的 JSON（與 `GET /` 的回應相同），送出的時機如下：
+///
+/// - 連線建立後立即送出一次。
+/// - 讀卡狀態改變（例如插拔卡片、接上或移除讀卡機）時立即送出。
+/// - 超過 `interval` 秒都沒有送出任何訊息時，重送目前的狀態。客戶端可以據此判斷連線是否還活著，例如超過兩倍的 `interval` 都沒有收到訊息時就重新連線。
+///
+/// 客戶端可以送出以下文字訊息：
+///
+/// - 秒數（例如 `5`）：變更 `interval`。
+/// - `close`：關閉連線，伺服器會回應代碼為 `1000` 的 Close frame。
+///
+/// 服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。伺服器每 25 秒會送出一次 Ping，超過 35 秒都沒有收到客戶端的任何 frame（包含 Pong）時會中斷連線。
+#[utoipa::path(
+    get,
+    path = "/ws",
+    tag = "讀卡",
+    params(WSQuery),
+    responses(
+        (status = 101, description = "切換為 WebSocket 協定"),
+        (status = 400, description = "不是 WebSocket 升級請求，或 `interval` 不是正整數"),
+        (status = 403, description = "請求的 `Origin` 不在 `--allow-origin` 白名單中"),
+    ),
+)]
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -299,12 +349,77 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
     tracing::info!(target: "websocket", id, "連線結束");
 }
 
+/// 取得所有讀卡機目前的狀態
+///
+/// 服務會在背景監控所有讀卡機，只在插入卡片時讀取一次並快取，所以這個端點會立即回應。
+///
+/// 一律回傳 `200`，服務本身的狀態請看 `status` 欄位。服務剛啟動、第一次掃描還沒完成時，最多會等待 5 秒；逾時的話，`status` 為 `pcsc_unavailable`，`error` 為 `Timeout`。
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "讀卡",
+    responses(
+        (status = 200, description = "所有讀卡機目前的狀態", body = SnapshotJSON, examples(
+            ("nhi_card" = (summary = "一台讀卡機讀到健保卡，另一台沒有插卡", value = json!({
+                "type": "snapshot",
+                "status": "ok",
+                "error": null,
+                "readers": [
+                    {
+                        "name": "ACS ACR39U ICC Reader 00 00",
+                        "state": "nhi_card",
+                        "card": {
+                            "card_no": "000012345678",
+                            "full_name": "王小明",
+                            "id_no": "A123456789",
+                            "birth_date": "1990-01-01",
+                            "birth_date_timestamp": 631123200000i64,
+                            "sex": "M",
+                            "issue_date": "2020-01-01",
+                            "issue_date_timestamp": 1577808000000i64
+                        },
+                        "error": null
+                    },
+                    {
+                        "name": "ACS ACR39U ICC Reader 01 00",
+                        "state": "empty",
+                        "card": null,
+                        "error": null
+                    }
+                ]
+            }))),
+            ("no_readers" = (summary = "PC/SC 服務可以使用，但沒有接任何讀卡機", value = json!({
+                "type": "snapshot",
+                "status": "ok",
+                "error": null,
+                "readers": []
+            }))),
+            ("pcsc_unavailable" = (summary = "PC/SC 服務無法使用", value = json!({
+                "type": "snapshot",
+                "status": "pcsc_unavailable",
+                "error": "NoService",
+                "readers": []
+            }))),
+        )),
+    ),
+)]
 async fn index_handler(State(state): State<AppState>) -> impl IntoResponse {
     let json_string = snapshot_json(&state).await;
 
     ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], json_string)
 }
 
+/// 取得服務的版本
+///
+/// 可用來檢查服務是否正在執行。客戶端可以用 `major` 與 `minor` 判斷伺服器的 API 是否相容。
+#[utoipa::path(
+    get,
+    path = "/version",
+    tag = "服務",
+    responses(
+        (status = 200, description = "服務的版本", body = Version),
+    ),
+)]
 async fn version_handler() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], VERSION.as_str())
 }
@@ -321,6 +436,7 @@ fn create_app(state: AppState) -> Router {
         .route("/", get(index_handler))
         .route("/ws", get(ws_handler))
         .route("/version", get(version_handler))
+        .merge(docs::docs_router())
         .layer(cors)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
