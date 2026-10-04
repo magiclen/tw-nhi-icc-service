@@ -3,7 +3,7 @@ mod docs;
 use std::{
     future, io,
     io::IsTerminal,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
@@ -15,10 +15,11 @@ use axum::{
     Router,
     body::Bytes,
     extract::{
-        Query, State, WebSocketUpgrade,
+        Query, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code},
     },
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header, uri::Authority},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -64,8 +65,13 @@ const FIRST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 關閉服務時，等待 WebSocket 連線結束的最長時間。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// 客戶端只會送出 `close` 或秒數，所以接收的 WebSocket 訊息不需要太大。
+const MAX_WS_MESSAGE_SIZE: usize = 1024;
+
 /// WebSocket 重送讀卡狀態的最短間隔（秒）。
 pub const MIN_WS_INTERVAL: u64 = 1;
+/// WebSocket 重送讀卡狀態的最長間隔（秒）。
+pub const MAX_WS_INTERVAL: u64 = 86400;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -136,9 +142,46 @@ struct Version {
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct WSQuery {
-    /// 讀卡狀態沒有變化時，重送目前狀態的間隔（秒）。小於 1 時視為 1；沒有指定時使用 `--default-ws-card-fetch-interval` 的值（預設為 3）。
-    #[param(minimum = 1, example = 3)]
+    /// 讀卡狀態沒有變化時，重送目前狀態的間隔（秒）。小於 1 時視為 1，大於 86400 時視為 86400；沒有指定時使用 `--default-ws-card-fetch-interval` 的值（預設為 3）。
+    #[param(minimum = 1, maximum = 86400, example = 3)]
     interval: Option<u64>,
+}
+
+/// 將 WebSocket 重送讀卡狀態的間隔限制在合理的範圍內。
+/// 太大的值會讓計算 heartbeat 時間時溢位而 panic。
+#[inline]
+fn ws_interval(seconds: u64) -> Duration {
+    Duration::from_secs(seconds.clamp(MIN_WS_INTERVAL, MAX_WS_INTERVAL))
+}
+
+/// 檢查 `Host` 是否為 IP 或 `localhost`。沒有 `Host` 的請求（非瀏覽器客戶端）一律允許。
+fn is_host_allowed(host: Option<&HeaderValue>) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+
+    let Ok(authority) = Authority::try_from(host.as_bytes()) else {
+        return false;
+    };
+
+    let host = authority.host();
+
+    host.eq_ignore_ascii_case("localhost")
+        || host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().is_ok()
+}
+
+/// 防止 DNS rebinding。
+/// 攻擊者的網域改為解析到本機後，瀏覽器會把請求當成同源而不送出 `Origin`，所以要另外限制 `Host`。
+async fn check_host(request: Request, next: Next) -> Response {
+    let host = request.headers().get(header::HOST);
+
+    if !is_host_allowed(host) {
+        tracing::warn!(?host, "host not allowed");
+
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    next.run(request).await
 }
 
 /// 取得最新讀卡狀態的 JSON。第一次掃描還沒完成時會先等待，逾時則視為 PC/SC 服務無法使用。
@@ -194,10 +237,10 @@ async fn send_close(socket: &mut WebSocket, id: u64, code: u16, reason: &'static
 ///
 /// 客戶端可以送出以下文字訊息：
 ///
-/// - 秒數（例如 `5`）：變更 `interval`。
+/// - 秒數（例如 `5`）：變更 `interval`，範圍與查詢中的 `interval` 相同。
 /// - `close`：關閉連線，伺服器會回應代碼為 `1000` 的 Close frame。
 ///
-/// 服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。伺服器每 25 秒會送出一次 Ping，超過 35 秒都沒有收到客戶端的任何 frame（包含 Pong）時會中斷連線。
+/// 服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。伺服器每 25 秒會送出一次 Ping，超過 35 秒都沒有收到客戶端的任何 frame（包含 Pong）時，會在下一次送出 Ping 時中斷連線。
 #[utoipa::path(
     get,
     path = "/ws",
@@ -217,24 +260,28 @@ async fn ws_handler(
     }): Query<WSQuery>,
     headers: HeaderMap,
 ) -> Response {
+    let origin = headers.get(header::ORIGIN);
+
     // CORS 管不到 WebSocket，所以要自己檢查來源
-    if !state.is_origin_allowed(headers.get(header::ORIGIN)) {
+    if !state.is_origin_allowed(origin) {
+        tracing::warn!(target: "websocket", ?origin, "origin not allowed");
+
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let interval = interval.unwrap_or(state.default_ws_interval).max(MIN_WS_INTERVAL);
+    let interval = ws_interval(interval.unwrap_or(state.default_ws_interval));
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, interval))
+    ws.max_frame_size(MAX_WS_MESSAGE_SIZE)
+        .max_message_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| handle_socket(socket, state, interval))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
+async fn handle_socket(mut socket: WebSocket, state: AppState, mut interval: Duration) {
     let _guard = WSConnectionGuard::new(&state.ws_connections);
 
     let id = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     tracing::info!(target: "websocket", id, "連線建立");
-
-    let mut interval = Duration::from_secs(interval);
 
     let mut snapshot = state.snapshot.clone();
     let mut shutdown = state.shutdown.clone();
@@ -329,7 +376,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
 
                                     break;
                                 } else if let Ok(seconds) = s.parse::<u64>() {
-                                    interval = Duration::from_secs(seconds.max(MIN_WS_INTERVAL));
+                                    interval = ws_interval(seconds);
                                     heartbeat.as_mut().reset(last_sent + interval);
                                 }
                             },
@@ -432,11 +479,18 @@ fn create_app(state: AppState) -> Router {
             .allow_origin(AllowOrigin::list(state.allowed_origins.iter().cloned()))
     };
 
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(index_handler))
         .route("/ws", get(ws_handler))
         .route("/version", get(version_handler))
-        .merge(docs::docs_router())
+        .merge(docs::docs_router());
+
+    // 沒有白名單時本來就允許所有來源，不需要防範 DNS rebinding
+    if !state.allowed_origins.is_empty() {
+        router = router.layer(middleware::from_fn(check_host));
+    }
+
+    router
         .layer(cors)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
@@ -552,4 +606,23 @@ pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_allowed() {
+        for host in ["127.0.0.1:12345", "127.0.0.1", "localhost:12345", "LocalHost", "[::1]:12345"]
+        {
+            assert!(is_host_allowed(Some(&HeaderValue::from_static(host))), "{host}");
+        }
+
+        assert!(is_host_allowed(None));
+
+        for host in ["evil.example:12345", "evil.example", "localhost.evil.example:12345"] {
+            assert!(!is_host_allowed(Some(&HeaderValue::from_static(host))), "{host}");
+        }
+    }
 }

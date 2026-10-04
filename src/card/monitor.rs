@@ -149,10 +149,18 @@ fn monitor(context: &Context, sender: &SnapshotSender) -> Error {
                     readers.push(old_readers.swap_remove(index));
                 },
                 None => {
-                    readers.push(MonitoredReader::new(&name));
+                    let reader = MonitoredReader::new(&name);
+
+                    tracing::info!(target: "card", reader = reader.reader.name, "reader connected");
+
+                    readers.push(reader);
                     states.push(ReaderState::new(name, State::UNAWARE));
                 },
             }
+        }
+
+        for reader in old_readers {
+            tracing::info!(target: "card", reader = reader.reader.name, "reader removed");
         }
 
         if let Some(pnp) = pnp.take() {

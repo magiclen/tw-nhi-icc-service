@@ -21,7 +21,11 @@ fn read_card(context: &Context, reader: &CStr) -> ReaderStatus {
         Err(error) => return ReaderStatus::Error(error),
     };
 
-    let status = read_nhi_card(&mut card);
+    let status = match read_nhi_card(&mut card) {
+        // 讀卡途中被拔卡
+        ReaderStatus::Error(Error::RemovedCard | Error::NoSmartcard) => ReaderStatus::Empty,
+        status => status,
+    };
 
     // `Card` 被 drop 時會重置卡片，所以要用 `LeaveCard` 斷線，避免干擾其他正在使用這張卡片的程式
     if let Err((_, error)) = card.disconnect(Disposition::LeaveCard) {

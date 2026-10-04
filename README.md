@@ -52,14 +52,14 @@ Options:
   -i, --interface <INTERFACE>                     要監聽的網路介面 IP [default: 127.0.0.1] [alias: --ip]
   -p, --port <PORT>                               要監聽的連接埠 [default: 12345]
       --default-ws-card-fetch-interval <SECONDS>  WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設時間間隔（秒） [default: 3] [alias: --interval]
-      --allow-origin <ORIGIN>                     允許存取此服務的網頁來源（Origin），例如 https://example.com；可重複指定，沒有指定時允許所有來源
+      --allow-origin <ORIGIN>                     允許存取此服務的網頁來源（Origin），例如 https://example.com；可重複指定，沒有指定時允許所有來源。有指定時，只能透過 IP 或 localhost 連線到此服務
   -h, --help                                      Print help
   -V, --version                                   Print version
 ```
 
 服務會在背景監控所有讀卡機，只在插入卡片時讀取一次並快取，所以 HTTP API 會立即回應，WebSocket 也會在插拔卡片時立即推送。
 
-健保卡資料屬於個人資料。若網頁系統的網域是固定的，建議使用 `--allow-origin` 限制可以存取此服務的網頁來源，避免其他網站在背景讀取健保卡資料。
+健保卡資料屬於個人資料。若網頁系統的網域是固定的，建議使用 `--allow-origin` 限制可以存取此服務的網頁來源，避免其他網站在背景讀取健保卡資料。為了防範 DNS rebinding 攻擊，有指定 `--allow-origin` 時，只能透過 IP（例如 `127.0.0.1`）或 `localhost` 連線到此服務。
 
 #### HTTP API
 
@@ -118,7 +118,7 @@ Options:
     * 讀卡狀態改變（例如插拔卡片、接上或移除讀卡機）時立即送出。
     * 超過 `interval` 秒都沒有送出任何訊息時，重送目前的狀態。客戶端可以據此判斷連線是否還活著，例如超過兩倍的 `interval` 都沒有收到訊息時就重新連線。
 
-    查詢中可以代入 `interval` 欄位來設定上述的時間間隔，單位為秒，最小值為 `1`，預設值由 `--default-ws-card-fetch-interval` 決定。客戶端也可以在連線時傳送秒數來更改時間間隔，或是傳送 `close` 來關閉連線。服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。
+    查詢中可以代入 `interval` 欄位來設定上述的時間間隔，單位為秒，範圍為 `1` 到 `86400`，預設值由 `--default-ws-card-fetch-interval` 決定。客戶端也可以在連線時傳送秒數（範圍同上）來更改時間間隔，或是傳送 `close` 來關閉連線。服務關閉時，伺服器會送出代碼為 `1001` 的 Close frame。
 * `GET /docs`：**Swagger UI**。可以在瀏覽器中查看 API 文件，並直接測試 `GET /` 與 `GET /version`。
 * `GET /docs/json`：OpenAPI 3.1 文件（JSON）。
 

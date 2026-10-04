@@ -1,9 +1,11 @@
 use std::net::IpAddr;
 
-use axum::http::HeaderValue;
+use axum::http::{HeaderValue, Uri};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use concat_with::concat_line;
 use terminal_size::terminal_size;
+
+use crate::server::{MAX_WS_INTERVAL, MIN_WS_INTERVAL};
 
 const APP_NAME: &str = "TW NHI IC Card Service";
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -38,7 +40,7 @@ pub struct CLIArgs {
     pub port: u16,
 
     #[arg(long, visible_alias = "interval", value_name = "SECONDS")]
-    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(value_parser = clap::value_parser!(u64).range(MIN_WS_INTERVAL..=MAX_WS_INTERVAL))]
     #[arg(default_value = "3")]
     #[arg(help = "WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設時間間隔（秒）")]
     pub default_ws_card_fetch_interval: u64,
@@ -46,18 +48,30 @@ pub struct CLIArgs {
     #[arg(long, value_name = "ORIGIN")]
     #[arg(value_parser = parse_origin)]
     #[arg(
-        help = "允許存取此服務的網頁來源（Origin），例如 https://example.com；可重複指定，沒有指定時允許所有來源"
+        help = "允許存取此服務的網頁來源（Origin），例如 https://example.com；可重複指定，沒有指定時允許所有來源。有指定時，只能透過 IP 或 localhost 連線到此服務"
     )]
     pub allow_origin: Vec<HeaderValue>,
 }
 
 fn parse_origin(arg: &str) -> Result<HeaderValue, String> {
-    // 瀏覽器送出的 Origin 不會有結尾的斜線，且協定與主機名稱都是小寫
-    let origin = arg.trim_end_matches('/').to_ascii_lowercase();
+    let uri = arg.parse::<Uri>().map_err(|error| error.to_string())?;
 
-    if !origin.contains("://") {
-        return Err(String::from("必須包含協定，例如 https://example.com"));
+    let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority()) else {
+        return Err(String::from("必須包含協定與主機，例如 https://example.com"));
+    };
+
+    if !matches!(uri.path(), "" | "/") || uri.query().is_some() {
+        return Err(String::from("不能包含路徑或查詢字串"));
     }
+
+    // 瀏覽器送出的 Origin 不會有結尾的斜線與預設的連接埠，且協定與主機名稱都是小寫
+    let scheme = scheme.to_ascii_lowercase();
+    let host = authority.host().to_ascii_lowercase();
+
+    let origin = match (scheme.as_str(), authority.port_u16()) {
+        ("http", Some(80)) | ("https", Some(443)) | (_, None) => format!("{scheme}://{host}"),
+        (_, Some(port)) => format!("{scheme}://{host}:{port}"),
+    };
 
     HeaderValue::from_str(&origin).map_err(|error| error.to_string())
 }

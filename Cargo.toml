@@ -41,5 +41,5 @@ utoipa = { version = "6", features = ["chrono", "preserve_order", "preserve_path
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored", "gzip"] }
 
 pcsc = "2"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 encoding_rs = "0.8"
