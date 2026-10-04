@@ -1,9 +1,9 @@
 use std::{
-    io,
+    future, io,
     io::IsTerminal,
     net::SocketAddr,
     sync::{
-        LazyLock,
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -16,15 +16,19 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code},
     },
-    http::{HeaderValue, header},
-    response::IntoResponse,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::time::{self, Instant};
+use tokio::{
+    signal,
+    sync::watch,
+    time::{self, Instant},
+};
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
     trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
@@ -54,6 +58,8 @@ const RECEIVE_TIMEOUT: Duration = Duration::from_secs(35);
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// 等待第一次讀卡掃描完成的最長時間。
 const FIRST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+/// 關閉服務時，等待 WebSocket 連線結束的最長時間。
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// WebSocket 重送讀卡狀態的最短間隔（秒）。
 pub const MIN_WS_INTERVAL: u64 = 1;
@@ -63,12 +69,48 @@ pub struct ServerConfig {
     pub socket_addr:         SocketAddr,
     /// WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設間隔（秒）。
     pub default_ws_interval: u64,
+    /// 允許存取此服務的網頁來源。空的代表允許所有來源。
+    pub allowed_origins:     Vec<HeaderValue>,
 }
 
 #[derive(Debug, Clone)]
 struct AppState {
     snapshot:            SnapshotReceiver,
     default_ws_interval: u64,
+    allowed_origins:     Arc<[HeaderValue]>,
+    shutdown:            watch::Receiver<bool>,
+    ws_connections:      Arc<watch::Sender<usize>>,
+}
+
+impl AppState {
+    /// 檢查 WebSocket 連線的來源。沒有設定白名單，或請求沒有帶 `Origin`（非瀏覽器客戶端）時一律允許。
+    fn is_origin_allowed(&self, origin: Option<&HeaderValue>) -> bool {
+        match origin {
+            Some(origin) if !self.allowed_origins.is_empty() => {
+                self.allowed_origins.contains(origin)
+            },
+            _ => true,
+        }
+    }
+}
+
+/// 計算目前的 WebSocket 連線數，讓關閉服務時可以等待連線送出 Close frame。
+struct WSConnectionGuard(Arc<watch::Sender<usize>>);
+
+impl WSConnectionGuard {
+    #[inline]
+    fn new(counter: &Arc<watch::Sender<usize>>) -> Self {
+        counter.send_modify(|count| *count += 1);
+
+        Self(counter.clone())
+    }
+}
+
+impl Drop for WSConnectionGuard {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
 }
 
 #[derive(Deserialize)]
@@ -123,13 +165,21 @@ async fn ws_handler(
     Query(WSQuery {
         interval,
     }): Query<WSQuery>,
-) -> impl IntoResponse {
+    headers: HeaderMap,
+) -> Response {
+    // CORS 管不到 WebSocket，所以要自己檢查來源
+    if !state.is_origin_allowed(headers.get(header::ORIGIN)) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let interval = interval.unwrap_or(state.default_ws_interval).max(MIN_WS_INTERVAL);
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, interval))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
+    let _guard = WSConnectionGuard::new(&state.ws_connections);
+
     let id = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     tracing::info!(target: "websocket", id, "連線建立");
@@ -137,6 +187,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
     let mut interval = Duration::from_secs(interval);
 
     let mut snapshot = state.snapshot.clone();
+    let mut shutdown = state.shutdown.clone();
 
     // 讓迴圈一開始就送出目前的讀卡狀態
     snapshot.mark_changed();
@@ -152,6 +203,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
 
     loop {
         tokio::select! {
+            _ = shutdown.changed() => {
+                send_close(&mut socket, id, close_code::AWAY, "服務關閉").await;
+
+                break;
+            },
             result = snapshot.changed() => {
                 if result.is_err() {
                     break;
@@ -254,11 +310,18 @@ async fn version_handler() -> impl IntoResponse {
 }
 
 fn create_app(state: AppState) -> Router {
+    let cors = if state.allowed_origins.is_empty() {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::permissive()
+            .allow_origin(AllowOrigin::list(state.allowed_origins.iter().cloned()))
+    };
+
     Router::new()
         .route("/", get(index_handler))
         .route("/ws", get(ws_handler))
         .route("/version", get(version_handler))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
@@ -272,11 +335,59 @@ fn create_app(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// 等待 Ctrl+C 或作業系統要求結束程式的訊號。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = signal::ctrl_c().await {
+            tracing::warn!(?error, "cannot listen for Ctrl+C");
+
+            future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            },
+            Err(error) => {
+                tracing::warn!(?error, "cannot listen for SIGTERM");
+
+                future::pending::<()>().await;
+            },
+        }
+    };
+
+    #[cfg(windows)]
+    let terminate = async {
+        match signal::windows::ctrl_close() {
+            Ok(mut signal) => {
+                signal.recv().await;
+            },
+            Err(error) => {
+                tracing::warn!(?error, "cannot listen for CTRL_CLOSE");
+
+                future::pending::<()>().await;
+            },
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    let terminate = future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => (),
+        () = terminate => (),
+    }
+}
+
 #[inline]
 pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
     let ServerConfig {
         socket_addr,
         default_ws_interval,
+        allowed_origins,
     } = config;
 
     let mut ansi_color = io::stdout().is_terminal();
@@ -290,16 +401,39 @@ pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
         .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
         .init();
 
+    let (shutdown_sender, shutdown) = watch::channel(false);
+    let ws_connections = Arc::new(watch::channel(0).0);
+
     let state = AppState {
         snapshot: spawn_card_monitor()?,
         default_ws_interval,
+        allowed_origins: allowed_origins.into(),
+        shutdown,
+        ws_connections: ws_connections.clone(),
     };
 
     let app = create_app(state);
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
     tracing::info!("listening on http://{socket_addr}");
-    axum::serve(listener, app).await?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+
+            tracing::info!("shutting down");
+
+            shutdown_sender.send_replace(true);
+        })
+        .await?;
+
+    // 已升級成 WebSocket 的連線不在 axum 的等待範圍內，要另外等它們送出 Close frame
+    let mut ws_connections = ws_connections.subscribe();
+
+    if time::timeout(SHUTDOWN_TIMEOUT, ws_connections.wait_for(|count| *count == 0)).await.is_err()
+    {
+        tracing::warn!("some WebSocket connections did not close in time");
+    }
 
     Ok(())
 }

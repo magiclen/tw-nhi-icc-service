@@ -14,6 +14,7 @@ fn main() -> anyhow::Result<()> {
     let config = ServerConfig {
         socket_addr:         SocketAddr::new(args.interface, args.port),
         default_ws_interval: args.default_ws_card_fetch_interval,
+        allowed_origins:     args.allow_origin,
     };
 
     let runtime = runtime::Runtime::new()?;

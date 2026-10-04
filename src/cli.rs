@@ -3,6 +3,7 @@ use std::{
     str::FromStr,
 };
 
+use axum::http::HeaderValue;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use concat_with::concat_line;
 use terminal_size::terminal_size;
@@ -44,11 +45,29 @@ pub struct CLIArgs {
     #[arg(default_value = "3")]
     #[arg(help = "WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設時間間隔（秒）")]
     pub default_ws_card_fetch_interval: u64,
+
+    #[arg(long, value_name = "ORIGIN")]
+    #[arg(value_parser = parse_origin)]
+    #[arg(
+        help = "允許存取此服務的網頁來源（Origin），例如 https://example.com；可重複指定，沒有指定時允許所有來源"
+    )]
+    pub allow_origin: Vec<HeaderValue>,
 }
 
 #[inline]
 fn parse_ip_addr(arg: &str) -> Result<IpAddr, AddrParseError> {
     IpAddr::from_str(arg)
+}
+
+fn parse_origin(arg: &str) -> Result<HeaderValue, String> {
+    // 瀏覽器送出的 Origin 不會有結尾的斜線，且協定與主機名稱都是小寫
+    let origin = arg.trim_end_matches('/').to_ascii_lowercase();
+
+    if !origin.contains("://") {
+        return Err(String::from("必須包含協定，例如 https://example.com"));
+    }
+
+    HeaderValue::from_str(&origin).map_err(|error| error.to_string())
 }
 
 pub fn get_args() -> CLIArgs {
