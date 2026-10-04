@@ -1,163 +1,61 @@
+mod monitor;
 mod nhi_card_basic;
+mod snapshot;
 
+use std::ffi::CStr;
+
+pub use monitor::*;
 pub use nhi_card_basic::*;
-use pcsc::{Context, Protocols, Scope, ShareMode};
-use tokio::{sync::Mutex, task};
+use pcsc::{Card, Context, Disposition, Error, MAX_BUFFER_SIZE, Protocols, ShareMode};
+pub use snapshot::*;
 
 const APDU_SELECT: &[u8] =
     b"\x00\xA4\x04\x00\x10\xD1\x58\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x11\x00";
 const APDU_READ: &[u8] = b"\x00\xCA\x11\x00\x02\x00\x00";
 
-struct CardState {
-    context:       Option<Context>,
-    nhi_card_list: Vec<NHICardBasic>,
-}
-
-static LOCK: Mutex<CardState> = Mutex::const_new(CardState {
-    context:       None,
-    nhi_card_list: Vec::new(),
-});
-static LOCK_GET: Mutex<()> = Mutex::const_new(());
-
-fn update_nhi_cards(state: &mut CardState, retry: bool) -> Result<(), pcsc::Error> {
-    if retry {
-        tracing::info!(target: "card", "try to re-establish card context");
-
-        state.context = Some(Context::establish(Scope::User)?);
-    } else {
-        state.nhi_card_list.clear();
-    }
-
-    let context = state.context.as_ref().unwrap();
-
-    let size = match context.list_readers_len() {
-        Ok(len) => len.max(4096),
-        Err(error) => {
-            if retry {
-                return Err(error);
-            } else {
-                return update_nhi_cards(state, true);
-            }
-        },
+/// 讀取讀卡機中的卡片。
+fn read_card(context: &Context, reader: &CStr) -> ReaderStatus {
+    let mut card = match context.connect(reader, ShareMode::Shared, Protocols::ANY) {
+        Ok(card) => card,
+        Err(Error::NoSmartcard | Error::RemovedCard) => return ReaderStatus::Empty,
+        Err(error) => return ReaderStatus::Error(error),
     };
 
-    let mut buffer: Vec<u8> = vec![0u8; size];
+    let status = read_nhi_card(&mut card);
 
-    let names = match context.list_readers(&mut buffer) {
-        Ok(names) => names,
-        Err(error) => {
-            if retry {
-                return Err(error);
-            } else {
-                return update_nhi_cards(state, true);
-            }
-        },
-    };
-
-    let (readers, readers_cs) = {
-        let mut v = Vec::with_capacity(1);
-        let mut v_cs = Vec::with_capacity(1);
-
-        for name in names {
-            v.push(name.to_string_lossy().into_owned());
-            v_cs.push(name);
-        }
-
-        (v, v_cs)
-    };
-
-    let mut buffer = [0u8; 59];
-
-    for (reader, reader_cs) in readers.into_iter().zip(readers_cs) {
-        let card = match context.connect(reader_cs, ShareMode::Shared, Protocols::ANY) {
-            Ok(card) => card,
-            Err(pcsc::Error::NoSmartcard | pcsc::Error::RemovedCard) => {
-                continue;
-            },
-            Err(error) => {
-                tracing::warn!(target: "card", reader, ?error);
-
-                continue;
-            },
-        };
-
-        match card.transmit(APDU_SELECT, &mut buffer) {
-            Ok([144, 0]) => {
-                // pass
-            },
-            Ok(_) => {
-                tracing::warn!(target: "card", reader, "unsupported reader");
-
-                continue;
-            },
-            Err(error) => {
-                tracing::warn!(target: "card", reader, ?error);
-
-                continue;
-            },
-        }
-
-        match card.transmit(APDU_READ, &mut buffer) {
-            Ok(result) => match NHICardBasic::from_raw(result) {
-                Ok(mut basic) => {
-                    basic.reader_name = Some(reader.clone());
-
-                    state.nhi_card_list.push(basic);
-                },
-                Err(error) => {
-                    tracing::warn!(target: "card", reader, ?error);
-
-                    continue;
-                },
-            },
-            Err(error) => {
-                tracing::warn!(target: "card", reader, ?error);
-
-                continue;
-            },
-        }
+    // `Card` 被 drop 時會重置卡片，所以要用 `LeaveCard` 斷線，避免干擾其他正在使用這張卡片的程式
+    if let Err((_, error)) = card.disconnect(Disposition::LeaveCard) {
+        tracing::warn!(target: "card", reader = ?reader, ?error);
     }
 
-    Ok(())
+    status
 }
 
-pub async fn fetch_nhi_cards_json_string() -> Result<String, pcsc::Error> {
-    let lock_get = LOCK_GET.lock().await;
-    let lock_result = LOCK.try_lock();
+fn read_nhi_card(card: &mut Card) -> ReaderStatus {
+    // 避免其他程式在 SELECT 與 READ 之間對卡片下指令
+    let transaction = match card.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => return ReaderStatus::Error(error),
+    };
 
-    drop(lock_get);
+    let mut buffer = [0u8; MAX_BUFFER_SIZE];
 
-    match lock_result {
-        Ok(mut lock) => {
-            if lock.context.is_none() {
-                lock.context = Some(Context::establish(Scope::User)?);
-            }
-
-            // Move the lock to the synchronized block to prevent the lock being released when executing the synchronized block and the HTTP connection is being disconnected.
-            let lock =
-                task::spawn_blocking(move || update_nhi_cards(&mut lock, false).map(|_| lock))
-                    .await
-                    .unwrap()?;
-
-            let json = serde_json::to_string(&lock.nhi_card_list).unwrap();
-
-            drop(lock);
-
-            Ok(json)
-        },
-        Err(_) => Ok(get_nhi_cards_json_string().await),
+    match transaction.transmit(APDU_SELECT, &mut buffer) {
+        Ok([0x90, 0x00]) => (),
+        Ok(_) => return ReaderStatus::UnsupportedCard,
+        Err(error) => return ReaderStatus::Error(error),
     }
-}
 
-#[inline]
-pub async fn get_nhi_cards_json_string() -> String {
-    let lock_get = LOCK_GET.lock().await;
-    let lock = LOCK.lock().await;
+    let response = match transaction.transmit(APDU_READ, &mut buffer) {
+        Ok(response) => response,
+        Err(error) => return ReaderStatus::Error(error),
+    };
 
-    let json = serde_json::to_string(&lock.nhi_card_list).unwrap();
-
-    drop(lock);
-    drop(lock_get);
-
-    json
+    match response.split_last_chunk() {
+        Some((data, [0x90, 0x00])) => match NHICardBasic::from_raw(data) {
+            Ok(basic) => ReaderStatus::NHICard(basic),
+            Err(_) => ReaderStatus::UnsupportedCard,
+        },
+        _ => ReaderStatus::UnsupportedCard,
+    }
 }

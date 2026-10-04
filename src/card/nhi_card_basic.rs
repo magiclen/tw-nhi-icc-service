@@ -43,9 +43,8 @@ pub enum Sex {
     Female,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NHICardBasic {
-    pub reader_name:          Option<String>,
     pub card_no:              String,
     pub full_name:            String,
     pub id_no:                String,
@@ -104,13 +103,15 @@ impl NHICardBasic {
                 e += 1;
             }
 
-            let (cow, _encoding_used, had_errors) = encoding_rs::BIG5.decode(&data[s..e]);
+            let (full_name, had_errors) =
+                encoding_rs::BIG5.decode_without_bom_handling(&data[s..e]);
 
+            // 罕用字可能無法以 Big5 解碼，此時以 U+FFFD 取代，不要讓整張卡無法讀取
             if had_errors {
-                return Err(NHICardParseError);
+                tracing::warn!(target: "card", "the full name contains characters that cannot be decoded");
             }
 
-            cow.into_owned()
+            full_name.into_owned()
         };
 
         let id_no = String::from_utf8(data[32..42].to_vec())?;
@@ -128,7 +129,6 @@ impl NHICardBasic {
         let issue_date = Self::raw_to_naive_date(&data[50..57])?;
 
         Ok(Self {
-            reader_name: None,
             card_no,
             full_name,
             id_no,

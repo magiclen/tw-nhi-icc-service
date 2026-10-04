@@ -18,7 +18,7 @@ use axum::{
     routing::get,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{sync::mpsc, task, time};
 use tower_http::{
@@ -52,8 +52,42 @@ static PONG_INTERVAL: Duration =
     Duration::from_secs(PING_INTERVAL_SECONDS + PING_PONG_DELAY_TIMEOUT_SECONDS);
 
 #[derive(Debug, Clone)]
-pub struct AppState {
+pub struct ServerConfig {
+    pub socket_addr:                 SocketAddr,
     pub default_card_fetch_interval: u64,
+}
+
+#[derive(Debug, Clone)]
+struct AppState {
+    snapshot:                    SnapshotReceiver,
+    default_card_fetch_interval: u64,
+}
+
+#[derive(Serialize)]
+struct LegacyNHICard<'a> {
+    reader_name: &'a str,
+    #[serde(flatten)]
+    card:        &'a NHICardBasic,
+}
+
+fn legacy_json(snapshot: &SnapshotReceiver) -> String {
+    let snapshot = snapshot.borrow();
+
+    let cards: Vec<LegacyNHICard> = match snapshot.as_deref().map(Snapshot::status) {
+        Some(SnapshotStatus::Ok(readers)) => readers
+            .iter()
+            .filter_map(|reader| match &reader.status {
+                ReaderStatus::NHICard(card) => Some(LegacyNHICard {
+                    reader_name: &reader.name,
+                    card,
+                }),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    serde_json::to_string(&cards).unwrap()
 }
 
 #[derive(Deserialize)]
@@ -98,15 +132,7 @@ async fn ws_handler(
             'outer: loop {
                 let t = Instant::now();
 
-                let json_string =
-                    match time::timeout(PING_INTERVAL, fetch_nhi_cards_json_string()).await {
-                        Ok(result) => result.unwrap_or_else(|_| String::from("[]")),
-                        Err(_) => {
-                            tracing::warn!(target: "websocket", id, "卡片讀取逾時！");
-
-                            String::from("[]")
-                        },
-                    };
+                let json_string = legacy_json(&state.snapshot);
 
                 tracing::debug!(target: "websocket", id, "send {json_string:?}");
 
@@ -221,8 +247,8 @@ async fn ws_handler(
     })
 }
 
-pub async fn index_handler() -> impl IntoResponse {
-    let json_string = fetch_nhi_cards_json_string().await.unwrap_or_else(|_| String::from("[]"));
+async fn index_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let json_string = legacy_json(&state.snapshot);
 
     ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], json_string)
 }
@@ -251,7 +277,12 @@ fn create_app(state: AppState) -> Router {
 }
 
 #[inline]
-pub async fn server_main(socket_addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
+pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
+    let ServerConfig {
+        socket_addr,
+        default_card_fetch_interval,
+    } = config;
+
     let mut ansi_color = io::stdout().is_terminal();
 
     if ansi_color && enable_ansi_support::enable_ansi_support().is_err() {
@@ -262,6 +293,11 @@ pub async fn server_main(socket_addr: SocketAddr, state: AppState) -> anyhow::Re
         .with(tracing_subscriber::fmt::layer().with_ansi(ansi_color))
         .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
         .init();
+
+    let state = AppState {
+        snapshot: spawn_card_monitor()?,
+        default_card_fetch_interval,
+    };
 
     let app = create_app(state);
 
