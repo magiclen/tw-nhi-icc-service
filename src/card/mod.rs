@@ -1,9 +1,6 @@
 mod nhi_card_basic;
 
-use std::marker::PhantomData;
-
 pub use nhi_card_basic::*;
-use once_cell::sync::Lazy;
 use pcsc::{Context, Protocols, Scope, ShareMode};
 use tokio::{sync::Mutex, task};
 
@@ -11,23 +8,27 @@ const APDU_SELECT: &[u8] =
     b"\x00\xA4\x04\x00\x10\xD1\x58\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x11\x00";
 const APDU_READ: &[u8] = b"\x00\xCA\x11\x00\x02\x00\x00";
 
-pub static mut CONTEXT: Option<Context> = None;
-static mut NHI_CARD_LIST: Vec<NHICardBasic> = Vec::new();
-static LOCK: Lazy<Mutex<PhantomData<bool>>> = Lazy::new(|| Mutex::new(PhantomData));
-static LOCK_GET: Lazy<Mutex<PhantomData<bool>>> = Lazy::new(|| Mutex::new(PhantomData));
+struct CardState {
+    context:       Option<Context>,
+    nhi_card_list: Vec<NHICardBasic>,
+}
 
-unsafe fn update_nhi_cards(retry: bool) -> Result<(), pcsc::Error> {
-    debug_assert!(LOCK.try_lock().is_err());
+static LOCK: Mutex<CardState> = Mutex::const_new(CardState {
+    context:       None,
+    nhi_card_list: Vec::new(),
+});
+static LOCK_GET: Mutex<()> = Mutex::const_new(());
 
+fn update_nhi_cards(state: &mut CardState, retry: bool) -> Result<(), pcsc::Error> {
     if retry {
         tracing::info!(target: "card", "try to re-establish card context");
 
-        CONTEXT = Some(Context::establish(Scope::User)?);
+        state.context = Some(Context::establish(Scope::User)?);
     } else {
-        NHI_CARD_LIST.clear();
+        state.nhi_card_list.clear();
     }
 
-    let context = CONTEXT.as_ref().unwrap();
+    let context = state.context.as_ref().unwrap();
 
     let size = match context.list_readers_len() {
         Ok(len) => len.max(4096),
@@ -35,7 +36,7 @@ unsafe fn update_nhi_cards(retry: bool) -> Result<(), pcsc::Error> {
             if retry {
                 return Err(error);
             } else {
-                return update_nhi_cards(true);
+                return update_nhi_cards(state, true);
             }
         },
     };
@@ -48,7 +49,7 @@ unsafe fn update_nhi_cards(retry: bool) -> Result<(), pcsc::Error> {
             if retry {
                 return Err(error);
             } else {
-                return update_nhi_cards(true);
+                return update_nhi_cards(state, true);
             }
         },
     };
@@ -101,7 +102,7 @@ unsafe fn update_nhi_cards(retry: bool) -> Result<(), pcsc::Error> {
                 Ok(mut basic) => {
                     basic.reader_name = Some(reader.clone());
 
-                    NHI_CARD_LIST.push(basic);
+                    state.nhi_card_list.push(basic);
                 },
                 Err(error) => {
                     tracing::warn!(target: "card", reader, ?error);
@@ -127,19 +128,18 @@ pub async fn fetch_nhi_cards_json_string() -> Result<String, pcsc::Error> {
     drop(lock_get);
 
     match lock_result {
-        Ok(lock) => {
-            let lock = unsafe {
-                if CONTEXT.is_none() {
-                    CONTEXT = Some(Context::establish(Scope::User)?);
-                }
+        Ok(mut lock) => {
+            if lock.context.is_none() {
+                lock.context = Some(Context::establish(Scope::User)?);
+            }
 
-                // Move the lock to the synchronized block to prevent the lock being released when executing the synchronized block and the HTTP connection is being disconnected.
-                task::spawn_blocking(move || update_nhi_cards(false).map(|_| lock))
+            // Move the lock to the synchronized block to prevent the lock being released when executing the synchronized block and the HTTP connection is being disconnected.
+            let lock =
+                task::spawn_blocking(move || update_nhi_cards(&mut lock, false).map(|_| lock))
                     .await
-                    .unwrap()?
-            };
+                    .unwrap()?;
 
-            let json = serde_json::to_string(unsafe { &NHI_CARD_LIST }).unwrap();
+            let json = serde_json::to_string(&lock.nhi_card_list).unwrap();
 
             drop(lock);
 
@@ -154,7 +154,7 @@ pub async fn get_nhi_cards_json_string() -> String {
     let lock_get = LOCK_GET.lock().await;
     let lock = LOCK.lock().await;
 
-    let json = serde_json::to_string(unsafe { &NHI_CARD_LIST }).unwrap();
+    let json = serde_json::to_string(&lock.nhi_card_list).unwrap();
 
     drop(lock);
     drop(lock_get);

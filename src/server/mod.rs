@@ -3,18 +3,19 @@ use std::{
     io::IsTerminal,
     net::SocketAddr,
     sync::{
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
-        Arc, Once,
     },
     time::{Duration, Instant, SystemTime},
 };
 
 use axum::{
-    extract::{ws::Message, Query, State, WebSocketUpgrade},
-    http::{header, HeaderValue},
+    Router,
+    body::Bytes,
+    extract::{Query, State, WebSocketUpgrade, ws::Message},
+    http::{HeaderValue, header},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Deserialize;
@@ -26,13 +27,22 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::card::*;
 
 static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-static mut VERSION: String = String::new();
+static VERSION: LazyLock<String> = LazyLock::new(|| {
+    json!({
+        "text": env!("CARGO_PKG_VERSION"),
+        "major": env!("CARGO_PKG_VERSION_MAJOR").parse::<u32>().unwrap(),
+        "minor": env!("CARGO_PKG_VERSION_MINOR").parse::<u32>().unwrap(),
+        "patch": env!("CARGO_PKG_VERSION_PATCH").parse::<u32>().unwrap(),
+        "pre": env!("CARGO_PKG_VERSION_PRE"),
+    })
+    .to_string()
+});
 
 const PING_INTERVAL_SECONDS: u64 = 25;
 const PING_PONG_DELAY_TIMEOUT_SECONDS: u64 = 10;
@@ -100,7 +110,7 @@ async fn ws_handler(
 
                 tracing::debug!(target: "websocket", id, "send {json_string:?}");
 
-                match sender.send(Message::Text(json_string)).await {
+                match sender.send(Message::Text(json_string.into())).await {
                     Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
                     Err(error) => {
                         tracing::info!(target: "websocket", id, ?error);
@@ -133,7 +143,7 @@ async fn ws_handler(
 
                         tracing::debug!(target: "websocket", id, "send ping");
 
-                        match sender.send(Message::Ping(vec![1, 2, 3])).await {
+                        match sender.send(Message::Ping(Bytes::from_static(&[1, 2, 3]))).await {
                             Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
                             Err(error) => {
                                 tracing::info!(target: "websocket", id, ?error);
@@ -218,22 +228,7 @@ pub async fn index_handler() -> impl IntoResponse {
 }
 
 pub async fn version_handler() -> impl IntoResponse {
-    static START: Once = Once::new();
-
-    START.call_once(|| unsafe {
-        VERSION = json!({
-            "text": env!("CARGO_PKG_VERSION"),
-            "major": env!("CARGO_PKG_VERSION_MAJOR").parse::<u32>().unwrap(),
-            "minor": env!("CARGO_PKG_VERSION_MINOR").parse::<u32>().unwrap(),
-            "patch": env!("CARGO_PKG_VERSION_PATCH").parse::<u32>().unwrap(),
-            "pre": env!("CARGO_PKG_VERSION_PRE"),
-        })
-        .to_string();
-    });
-
-    ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], unsafe {
-        VERSION.as_str()
-    })
+    ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], VERSION.as_str())
 }
 
 fn create_app(state: AppState) -> Router {
