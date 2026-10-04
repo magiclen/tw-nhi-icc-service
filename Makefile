@@ -14,21 +14,21 @@ windows_x86_64: $(EXE_windows_x86_64)
 
 windows_i686: $(EXE_windows_i686)
 
-$(EXE_linux_x86_64): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) | sed 's/ /\\ /g')
+$(EXE_linux_x86_64): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -not -path './target/*' | sed 's/ /\\ /g')
 	cargo build --release
 	strip $(EXE_linux_x86_64)
 
-$(EXE_windows_x86_64): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) | sed 's/ /\\ /g')
+$(EXE_windows_x86_64): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -not -path './target/*' | sed 's/ /\\ /g')
 	cross build --release --target x86_64-pc-windows-gnu
 	strip $(EXE_windows_x86_64)
 
-$(EXE_windows_i686): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) | sed 's/ /\\ /g')
+$(EXE_windows_i686): $(shell find . -type f \( -iname '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -not -path './target/*' | sed 's/ /\\ /g')
 	cross build --release --target i686-pc-windows-gnu
 	strip $(EXE_windows_i686)
 
 install:
 	$(MAKE)
-	sudo cp $(EXE_linux) $(INSTALLED_EXE)
+	sudo cp $(EXE_linux_x86_64) $(INSTALLED_EXE)
 	sudo chown root: $(INSTALLED_EXE)
 	sudo chmod 0755 $(INSTALLED_EXE)
 
