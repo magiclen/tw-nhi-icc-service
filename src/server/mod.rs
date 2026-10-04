@@ -126,13 +126,13 @@ impl Drop for WSConnectionGuard {
 #[derive(Serialize, ToSchema)]
 struct Version {
     /// 完整的版本字串。
-    #[schema(value_type = String, examples("0.3.1"))]
+    #[schema(value_type = String, examples("0.3.2"))]
     text:  &'static str,
     #[schema(examples(0))]
     major: u32,
     #[schema(examples(3))]
     minor: u32,
-    #[schema(examples(1))]
+    #[schema(examples(2))]
     patch: u32,
     /// 預發布版本的標籤，沒有時為空字串。
     #[schema(value_type = String, examples(""))]

@@ -100,7 +100,7 @@ pub struct ReaderJSON {
     /// 健保卡的基本資料。只有 `state` 為 `nhi_card` 時才有值，否則為 `null`。
     #[schema(required = true)]
     card:  Option<NHICardBasic>,
-    /// PC/SC 的錯誤名稱。只有 `state` 為 `error` 時才有值，否則為 `null`。例如 `SharingViolation` 代表卡片正被其他程式獨占使用，服務會自動重試。
+    /// PC/SC 的錯誤名稱。只有 `state` 為 `error` 時才有值，否則為 `null`。例如 `SharingViolation` 代表卡片正被其他程式獨占使用，服務會自動重試；`ReaderUnavailable` 代表讀卡機目前無法使用，恢復後狀態會自動更新。
     #[schema(required = true, examples("SharingViolation"))]
     error: Option<String>,
 }

@@ -99,7 +99,7 @@ Options:
         * `empty`：沒有插卡。
         * `nhi_card`：讀到健保卡，資料在 `card` 欄位。
         * `unsupported_card`：有卡片，但不是健保卡（例如 SAM 卡或晶片金融卡）。
-        * `error`：讀卡失敗，`error` 為 PC/SC 的錯誤名稱。例如 `SharingViolation` 代表卡片正被其他程式獨占使用，服務會自動重試。
+        * `error`：讀卡失敗，`error` 為 PC/SC 的錯誤名稱。例如 `SharingViolation` 代表卡片正被其他程式獨占使用，服務會自動重試；`ReaderUnavailable` 代表讀卡機目前無法使用，恢復後狀態會自動更新。
     * `card` 與 `error` 欄位一定存在，不適用時為 `null`。
     * `full_name` 中無法以 Big5 解碼的字（例如部分罕用字）會以 `U+FFFD`（`�`）取代。
     * 時間戳記(timestamp)的單位是毫秒，代表該日期在台灣時區（UTC+8）的午夜，與伺服器的時區無關。若只需要日期，建議直接使用 `birth_date` 與 `issue_date` 欄位。
@@ -108,9 +108,9 @@ Options:
     {
         "major": 0,
         "minor": 3,
-        "patch": 1,
+        "patch": 2,
         "pre": "",
-        "text": "0.3.1"
+        "text": "0.3.2"
     }
     ```
 * `GET /ws`：**WebSocket 端點**。伺服器會以文字訊息送出與 `GET /` 相同格式的 JSON，送出的時機如下：
