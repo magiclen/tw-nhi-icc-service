@@ -126,13 +126,13 @@ impl Drop for WSConnectionGuard {
 #[derive(Serialize, ToSchema)]
 struct Version {
     /// 完整的版本字串。
-    #[schema(value_type = String, examples("0.3.0"))]
+    #[schema(value_type = String, examples("0.3.1"))]
     text:  &'static str,
     #[schema(examples(0))]
     major: u32,
     #[schema(examples(3))]
     minor: u32,
-    #[schema(examples(0))]
+    #[schema(examples(1))]
     patch: u32,
     /// 預發布版本的標籤，沒有時為空字串。
     #[schema(value_type = String, examples(""))]
@@ -398,7 +398,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, mut interval: Dur
 
 /// 取得所有讀卡機目前的狀態
 ///
-/// 服務會在背景監控所有讀卡機，只在插入卡片時讀取一次並快取，所以這個端點會立即回應。
+/// 服務會在背景監控所有讀卡機，在插入卡片時讀取並快取，所以這個端點會立即回應。有些讀卡機的驅動程式會漏掉插拔卡事件，所以卡片插著時，服務每 3 秒會重新讀卡，確認卡片沒有被拔出或更換。
 ///
 /// 一律回傳 `200`，服務本身的狀態請看 `status` 欄位。服務剛啟動、第一次掃描還沒完成時，最多會等待 5 秒；逾時的話，`status` 為 `pcsc_unavailable`，`error` 為 `Timeout`。
 #[utoipa::path(

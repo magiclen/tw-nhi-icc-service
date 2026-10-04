@@ -15,24 +15,67 @@ const APDU_READ: &[u8] = b"\x00\xCA\x11\x00\x02\x00\x00";
 
 /// 讀取讀卡機中的卡片。
 fn read_card(context: &Context, reader: &CStr) -> ReaderStatus {
-    let mut card = match context.connect(reader, ShareMode::Shared, Protocols::ANY) {
+    match context.connect(reader, ShareMode::Shared, Protocols::ANY) {
+        Ok(card) => read_and_disconnect(card, reader),
+        Err(Error::NoSmartcard | Error::RemovedCard) => ReaderStatus::Empty,
+        Err(error) => ReaderStatus::Error(error),
+    }
+}
+
+/// 重新讀取應該還插著的卡片，確認卡片沒有被拔出或更換。
+fn verify_card(context: &Context, reader: &CStr) -> ReaderStatus {
+    match read_card(context, reader) {
+        // PC/SC 無法替卡片上電，可能是驅動程式漏掉了拔卡事件，強制重新上電再讀一次
+        ReaderStatus::Error(
+            Error::ProtoMismatch | Error::UnpoweredCard | Error::UnresponsiveCard,
+        ) => (),
+        status => return status,
+    }
+
+    match repower_card(context, reader) {
+        status @ (ReaderStatus::NHICard(_)
+        | ReaderStatus::UnsupportedCard
+        | ReaderStatus::Error(Error::SharingViolation | Error::ResetCard)) => status,
+        // 強制重新上電也失敗，視為卡片已經不在
+        _ => ReaderStatus::Empty,
+    }
+}
+
+/// 強制替卡片重新上電後讀卡。
+fn repower_card(context: &Context, reader: &CStr) -> ReaderStatus {
+    // Direct 模式在 PC/SC 認為卡片無法使用時也能連線
+    let mut card = match context.connect(reader, ShareMode::Direct, Protocols::UNDEFINED) {
         Ok(card) => card,
-        Err(Error::NoSmartcard | Error::RemovedCard) => return ReaderStatus::Empty,
         Err(error) => return ReaderStatus::Error(error),
     };
 
+    if let Err(error) = card.reconnect(ShareMode::Shared, Protocols::ANY, Disposition::UnpowerCard)
+    {
+        disconnect(card, reader);
+
+        return ReaderStatus::Error(error);
+    }
+
+    read_and_disconnect(card, reader)
+}
+
+fn read_and_disconnect(mut card: Card, reader: &CStr) -> ReaderStatus {
     let status = match read_nhi_card(&mut card) {
         // 讀卡途中被拔卡
         ReaderStatus::Error(Error::RemovedCard | Error::NoSmartcard) => ReaderStatus::Empty,
         status => status,
     };
 
-    // `Card` 被 drop 時會重置卡片，所以要用 `LeaveCard` 斷線，避免干擾其他正在使用這張卡片的程式
+    disconnect(card, reader);
+
+    status
+}
+
+/// `Card` 被 drop 時會重置卡片，所以要用 `LeaveCard` 斷線，避免干擾其他正在使用這張卡片的程式。
+fn disconnect(card: Card, reader: &CStr) {
     if let Err((_, error)) = card.disconnect(Disposition::LeaveCard) {
         tracing::warn!(target: "card", reader = ?reader, ?error);
     }
-
-    status
 }
 
 fn read_nhi_card(card: &mut Card) -> ReaderStatus {

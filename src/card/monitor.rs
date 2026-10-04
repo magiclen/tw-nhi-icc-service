@@ -1,14 +1,23 @@
-use std::{ffi::CString, io, sync::Arc, thread, time::Duration};
+use std::{
+    ffi::CString,
+    io,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use pcsc::{Context, Error, PNP_NOTIFICATION, ReaderState, Scope, State};
 use tokio::sync::watch;
 
-use super::{Reader, ReaderStatus, Snapshot, SnapshotStatus, read_card};
+use super::{Reader, ReaderStatus, Snapshot, SnapshotStatus, read_card, verify_card};
 
 /// 等待讀卡機狀態改變的最長時間，也是重新列出讀卡機與重試讀卡的間隔。
 const STATUS_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 /// PC/SC 服務無法使用時，重新建立 context 的間隔。
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+/// 卡片插著時，重新讀卡確認的間隔。
+/// 有些讀卡機的驅動程式會漏掉插拔卡事件（例如 Castles EZ100PU 在 Linux 上，讀卡機初始化時已插著的卡，第一次拔插不會被偵測到），所以不能只依靠 PC/SC 的事件。
+const VERIFY_INTERVAL: Duration = Duration::from_secs(3);
 
 /// 可以取得最新讀卡狀態的接收端。在第一次掃描完成之前，值為 `None`。
 pub type SnapshotReceiver = watch::Receiver<Option<Arc<Snapshot>>>;
@@ -22,6 +31,10 @@ struct MonitoredReader {
     read_event_count: Option<u32>,
     /// 上次讀卡遇到暫時性的錯誤，下一輪要重試。
     retry:            bool,
+    /// 上次讀卡的時間。
+    read_at:          Instant,
+    /// 卡片插著時，要定期重新讀卡確認。
+    verify:           bool,
 }
 
 impl MonitoredReader {
@@ -34,18 +47,24 @@ impl MonitoredReader {
             },
             read_event_count: None,
             retry:            false,
+            read_at:          Instant::now(),
+            verify:           false,
         }
     }
 
     fn update(&mut self, context: &Context, state: &ReaderState) {
         let event_state = state.event_state();
 
-        // 讀卡機已被移除或無法使用，等下一輪重新列出讀卡機
-        if event_state.intersects(State::UNKNOWN | State::UNAVAILABLE | State::IGNORE) {
+        // 讀卡機已被移除，等下一輪重新列出讀卡機
+        if event_state.intersects(State::UNKNOWN | State::IGNORE) {
             return;
         }
 
-        let status = if event_state.contains(State::PRESENT) {
+        let status = if event_state.contains(State::UNAVAILABLE) {
+            self.read_event_count = None;
+
+            ReaderStatus::Error(Error::ReaderUnavailable)
+        } else if event_state.contains(State::PRESENT) {
             let event_count = state.event_count();
 
             if self.read_event_count == Some(event_count) && !self.retry {
@@ -53,6 +72,7 @@ impl MonitoredReader {
             }
 
             self.read_event_count = Some(event_count);
+            self.read_at = Instant::now();
 
             read_card(context, state.name())
         } else {
@@ -64,6 +84,38 @@ impl MonitoredReader {
         self.retry =
             matches!(status, ReaderStatus::Error(Error::SharingViolation | Error::ResetCard));
 
+        // 只確認讀得到的卡片，讀卡失敗（例如卡片插反）時維持原本的錯誤
+        self.verify = matches!(status, ReaderStatus::NHICard(_) | ReaderStatus::UnsupportedCard);
+
+        self.set_status(status);
+    }
+
+    /// 卡片插著且超過 `VERIFY_INTERVAL` 沒有讀卡時，重新讀卡確認卡片沒有被拔出或更換。
+    fn verify_if_due(&mut self, context: &Context, state: &ReaderState) {
+        if !self.verify
+            || !state.event_state().contains(State::PRESENT)
+            || self.read_at.elapsed() < VERIFY_INTERVAL
+        {
+            return;
+        }
+
+        self.read_at = Instant::now();
+
+        let status = verify_card(context, state.name());
+
+        // 其他程式正在使用這張卡片，無法確認，維持原本的狀態
+        if matches!(status, ReaderStatus::Error(Error::SharingViolation | Error::ResetCard)) {
+            return;
+        }
+
+        if self.reader.status != status {
+            tracing::warn!(target: "card", reader = self.reader.name, "card changed without a PC/SC event");
+
+            self.set_status(status);
+        }
+    }
+
+    fn set_status(&mut self, status: ReaderStatus) {
         if self.reader.status != status {
             match &status {
                 ReaderStatus::Error(error) => {
@@ -229,6 +281,10 @@ fn monitor(context: &Context, sender: &SnapshotSender) -> Error {
                 continue;
             },
             Err(error) => return error,
+        }
+
+        for (state, reader) in states.iter().zip(readers.iter_mut()) {
+            reader.verify_if_due(context, state);
         }
 
         publish(
