@@ -40,8 +40,9 @@ pub struct CLIArgs {
     pub port: u16,
 
     #[arg(long, visible_alias = "interval", value_name = "SECONDS")]
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
     #[arg(default_value = "3")]
-    #[arg(help = "WebSocket 回傳卡片資料的預設時間間隔（秒）")]
+    #[arg(help = "WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設時間間隔（秒）")]
     pub default_ws_card_fetch_interval: u64,
 }
 

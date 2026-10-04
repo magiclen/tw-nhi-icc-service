@@ -3,24 +3,26 @@ use std::{
     io::IsTerminal,
     net::SocketAddr,
     sync::{
-        Arc, LazyLock,
+        LazyLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime},
+    time::Duration,
 };
 
 use axum::{
     Router,
     body::Bytes,
-    extract::{Query, State, WebSocketUpgrade, ws::Message},
+    extract::{
+        Query, State, WebSocketUpgrade,
+        ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code},
+    },
     http::{HeaderValue, header},
     response::IntoResponse,
     routing::get,
 };
-use futures::{sink::SinkExt, stream::StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
-use tokio::{sync::mpsc, task, time};
+use tokio::time::{self, Instant};
 use tower_http::{
     cors::CorsLayer,
     set_header::SetResponseHeaderLayer,
@@ -44,50 +46,29 @@ static VERSION: LazyLock<String> = LazyLock::new(|| {
     .to_string()
 });
 
-const PING_INTERVAL_SECONDS: u64 = 25;
-const PING_PONG_DELAY_TIMEOUT_SECONDS: u64 = 10;
+/// WebSocket 送出 ping 的間隔。
+const PING_INTERVAL: Duration = Duration::from_secs(25);
+/// 超過這段時間沒有收到客戶端的任何 frame 就斷線。
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(35);
+/// 送出一則 WebSocket 訊息的最長時間。
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// 等待第一次讀卡掃描完成的最長時間。
+const FIRST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
-static PING_INTERVAL: Duration = Duration::from_secs(PING_INTERVAL_SECONDS);
-static PONG_INTERVAL: Duration =
-    Duration::from_secs(PING_INTERVAL_SECONDS + PING_PONG_DELAY_TIMEOUT_SECONDS);
+/// WebSocket 重送讀卡狀態的最短間隔（秒）。
+pub const MIN_WS_INTERVAL: u64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    pub socket_addr:                 SocketAddr,
-    pub default_card_fetch_interval: u64,
+    pub socket_addr:         SocketAddr,
+    /// WebSocket 在讀卡狀態沒有變化時，重送目前狀態的預設間隔（秒）。
+    pub default_ws_interval: u64,
 }
 
 #[derive(Debug, Clone)]
 struct AppState {
-    snapshot:                    SnapshotReceiver,
-    default_card_fetch_interval: u64,
-}
-
-#[derive(Serialize)]
-struct LegacyNHICard<'a> {
-    reader_name: &'a str,
-    #[serde(flatten)]
-    card:        &'a NHICardBasic,
-}
-
-fn legacy_json(snapshot: &SnapshotReceiver) -> String {
-    let snapshot = snapshot.borrow();
-
-    let cards: Vec<LegacyNHICard> = match snapshot.as_deref().map(Snapshot::status) {
-        Some(SnapshotStatus::Ok(readers)) => readers
-            .iter()
-            .filter_map(|reader| match &reader.status {
-                ReaderStatus::NHICard(card) => Some(LegacyNHICard {
-                    reader_name: &reader.name,
-                    card,
-                }),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-
-    serde_json::to_string(&cards).unwrap()
+    snapshot:            SnapshotReceiver,
+    default_ws_interval: u64,
 }
 
 #[derive(Deserialize)]
@@ -95,9 +76,45 @@ struct WSQuery {
     interval: Option<u64>,
 }
 
-#[inline]
-fn now() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64
+/// 取得最新讀卡狀態的 JSON。第一次掃描還沒完成時會先等待，逾時則視為 PC/SC 服務無法使用。
+async fn snapshot_json(state: &AppState) -> String {
+    let mut receiver = state.snapshot.clone();
+
+    if let Ok(Ok(snapshot)) =
+        time::timeout(FIRST_SNAPSHOT_TIMEOUT, receiver.wait_for(Option::is_some)).await
+        && let Some(snapshot) = snapshot.as_deref()
+    {
+        return snapshot.json().to_owned();
+    }
+
+    Snapshot::new(SnapshotStatus::PcscUnavailable(pcsc::Error::Timeout)).json().to_owned()
+}
+
+/// 送出 WebSocket 訊息。失敗或逾時回傳 `false`。
+async fn send(socket: &mut WebSocket, id: u64, message: Message) -> bool {
+    match time::timeout(SEND_TIMEOUT, socket.send(message)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::info!(target: "websocket", id, ?error);
+
+            false
+        },
+        Err(_) => {
+            tracing::info!(target: "websocket", id, "送出訊息逾時");
+
+            false
+        },
+    }
+}
+
+/// 送出 Close frame。
+async fn send_close(socket: &mut WebSocket, id: u64, code: u16, reason: &'static str) {
+    let frame = CloseFrame {
+        code,
+        reason: Utf8Bytes::from_static(reason),
+    };
+
+    send(socket, id, Message::Close(Some(frame))).await;
 }
 
 async fn ws_handler(
@@ -107,153 +124,132 @@ async fn ws_handler(
         interval,
     }): Query<WSQuery>,
 ) -> impl IntoResponse {
-    let card_fetch_interval =
-        Arc::new(AtomicU64::new(interval.unwrap_or(state.default_card_fetch_interval)));
+    let interval = interval.unwrap_or(state.default_ws_interval).max(MIN_WS_INTERVAL);
 
-    ws.on_upgrade(|socket| async move {
-        let id = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
+    ws.on_upgrade(move |socket| handle_socket(socket, state, interval))
+}
 
-        tracing::info!(target: "websocket", id, "連線建立");
+async fn handle_socket(mut socket: WebSocket, state: AppState, interval: u64) {
+    let id = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-        let card_fetch_interval_sender = card_fetch_interval.clone();
+    tracing::info!(target: "websocket", id, "連線建立");
 
-        let (mut sender, mut receiver) = socket.split();
+    let mut interval = Duration::from_secs(interval);
 
-        let (sender_ctrl, mut receiver_ctrl) = mpsc::channel::<()>(1);
+    let mut snapshot = state.snapshot.clone();
 
-        let sender_ctrl = Arc::new(sender_ctrl);
-        let sender_ctrl_pong = sender_ctrl.clone();
+    // 讓迴圈一開始就送出目前的讀卡狀態
+    snapshot.mark_changed();
 
-        let last_message_time = Arc::new(AtomicU64::new(now()));
-        let last_message_time_sender = last_message_time.clone();
-        let last_message_time_pong = last_message_time.clone();
+    let mut last_sent = Instant::now();
+    let mut last_received = Instant::now();
 
-        let t_sender = task::spawn(async move {
-            'outer: loop {
-                let t = Instant::now();
+    // 讀卡狀態沒有變化時，每隔 `interval` 重送一次，讓瀏覽器端可以判斷連線是否還活著
+    let heartbeat = time::sleep(interval);
+    tokio::pin!(heartbeat);
 
-                let json_string = legacy_json(&state.snapshot);
+    let mut ping = time::interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
 
-                tracing::debug!(target: "websocket", id, "send {json_string:?}");
+    loop {
+        tokio::select! {
+            result = snapshot.changed() => {
+                if result.is_err() {
+                    break;
+                }
 
-                match sender.send(Message::Text(json_string.into())).await {
-                    Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
+                let message = snapshot.borrow_and_update().as_deref().map(|snapshot| Message::Text(snapshot.json().into()));
+
+                if let Some(message) = message {
+                    tracing::debug!(target: "websocket", id, "send snapshot");
+
+                    if !send(&mut socket, id, message).await {
+                        break;
+                    }
+
+                    last_sent = Instant::now();
+                    heartbeat.as_mut().reset(last_sent + interval);
+                }
+            },
+            () = &mut heartbeat => {
+                let message = snapshot.borrow().as_deref().map(|snapshot| Message::Text(snapshot.json().into()));
+
+                if let Some(message) = message {
+                    tracing::debug!(target: "websocket", id, "send snapshot (heartbeat)");
+
+                    if !send(&mut socket, id, message).await {
+                        break;
+                    }
+
+                    last_sent = Instant::now();
+                }
+
+                heartbeat.as_mut().reset(Instant::now() + interval);
+            },
+            _ = ping.tick() => {
+                if last_received.elapsed() > RECEIVE_TIMEOUT {
+                    tracing::info!(target: "websocket", id, "客戶端沒有回應");
+
+                    break;
+                }
+
+                tracing::debug!(target: "websocket", id, "send ping");
+
+                if !send(&mut socket, id, Message::Ping(Bytes::new())).await {
+                    break;
+                }
+            },
+            message = socket.recv() => {
+                let Some(message) = message else {
+                    break;
+                };
+
+                tracing::debug!(target: "websocket", id, ?message, "receive");
+
+                match message {
+                    Ok(message) => {
+                        last_received = Instant::now();
+
+                        match message {
+                            Message::Close(frame) => {
+                                if let Some(frame) = frame {
+                                    tracing::info!(target: "websocket", id, ?frame);
+                                }
+
+                                break;
+                            },
+                            Message::Text(s) => {
+                                if s.eq_ignore_ascii_case("close") {
+                                    send_close(&mut socket, id, close_code::NORMAL, "").await;
+
+                                    break;
+                                } else if let Ok(seconds) = s.parse::<u64>() {
+                                    interval = Duration::from_secs(seconds.max(MIN_WS_INTERVAL));
+                                    heartbeat.as_mut().reset(last_sent + interval);
+                                }
+                            },
+                            _ => (),
+                        }
+                    },
                     Err(error) => {
                         tracing::info!(target: "websocket", id, ?error);
-
-                        sender_ctrl.send(()).await.unwrap();
 
                         break;
                     },
                 }
-
-                // wait and ping
-                loop {
-                    let d = t.elapsed();
-
-                    let card_fetch_interval =
-                        Duration::from_secs(card_fetch_interval_sender.load(Ordering::Relaxed));
-
-                    if d >= card_fetch_interval {
-                        break;
-                    }
-
-                    let sleep_interval = card_fetch_interval - d;
-
-                    if sleep_interval <= PING_INTERVAL {
-                        time::sleep(sleep_interval).await;
-
-                        break;
-                    } else {
-                        time::sleep(PING_INTERVAL).await;
-
-                        tracing::debug!(target: "websocket", id, "send ping");
-
-                        match sender.send(Message::Ping(Bytes::from_static(&[1, 2, 3]))).await {
-                            Ok(_) => last_message_time_sender.store(now(), Ordering::Relaxed),
-                            Err(error) => {
-                                tracing::info!(target: "websocket", id, ?error);
-
-                                sender_ctrl.send(()).await.unwrap();
-
-                                break 'outer;
-                            },
-                        }
-                    }
-                }
-            }
-        });
-
-        let t_pong = task::spawn(async move {
-            loop {
-                time::sleep(PONG_INTERVAL).await;
-
-                let last_pong = last_message_time_pong.load(Ordering::Relaxed);
-
-                if now() - last_pong > PONG_INTERVAL.as_millis() as u64 {
-                    tracing::info!(target: "websocket", id, "客戶端沒有回應");
-
-                    sender_ctrl_pong.send(()).await.unwrap();
-
-                    break;
-                }
-            }
-        });
-
-        loop {
-            tokio::select! {
-                _ = receiver_ctrl.recv() => break,
-                message = receiver.next() => {
-                    if let Some(message) = message {
-                        tracing::debug!(target: "websocket", id, ?message, "receive");
-
-                        last_message_time.store(now(), Ordering::Relaxed);
-
-                        match message {
-                            Ok(message) => match message {
-                                Message::Close(reason) => {
-                                    if let Some(reason) = reason {
-                                        tracing::info!(target: "websocket", id, ?reason);
-                                    }
-
-                                    break;
-                                },
-                                Message::Text(s) => {
-                                    if s.eq_ignore_ascii_case("close") {
-                                        break;
-                                    } else if let Ok(seconds) = s.parse::<u64>() {
-                                        card_fetch_interval.store(seconds, Ordering::Relaxed);
-                                    }
-                                },
-                                _ => (),
-                            },
-                            Err(error) => {
-                                tracing::info!(target: "websocket", id, ?error);
-
-                                break;
-                            },
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
+            },
         }
+    }
 
-        t_sender.abort();
-        t_pong.abort();
-
-        tracing::info!(target: "websocket", id, "連線結束");
-    })
+    tracing::info!(target: "websocket", id, "連線結束");
 }
 
 async fn index_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let json_string = legacy_json(&state.snapshot);
+    let json_string = snapshot_json(&state).await;
 
     ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], json_string)
 }
 
-pub async fn version_handler() -> impl IntoResponse {
+async fn version_handler() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], VERSION.as_str())
 }
 
@@ -280,7 +276,7 @@ fn create_app(state: AppState) -> Router {
 pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
     let ServerConfig {
         socket_addr,
-        default_card_fetch_interval,
+        default_ws_interval,
     } = config;
 
     let mut ansi_color = io::stdout().is_terminal();
@@ -296,7 +292,7 @@ pub async fn server_main(config: ServerConfig) -> anyhow::Result<()> {
 
     let state = AppState {
         snapshot: spawn_card_monitor()?,
-        default_card_fetch_interval,
+        default_ws_interval,
     };
 
     let app = create_app(state);
