@@ -35,7 +35,7 @@ impl From<ParseIntError> for NHICardParseError {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Sex {
     #[serde(rename = "M")]
     Male,
@@ -56,7 +56,15 @@ pub struct NHICardBasic {
     pub issue_date_timestamp: i64,
 }
 
+/// 台灣時區（UTC+8）與 UTC 的差距（毫秒）。
+const TW_UTC_OFFSET_MILLIS: i64 = 8 * 60 * 60 * 1000;
+
 impl NHICardBasic {
+    /// 健保卡上的日期是台灣日期，所以固定以 UTC+8 的午夜計算時間戳記，不受伺服器時區與歷史日光節約時間影響。
+    fn naive_date_to_timestamp_millis(date: NaiveDate) -> i64 {
+        date.and_time(NaiveTime::MIN).and_utc().timestamp_millis() - TW_UTC_OFFSET_MILLIS
+    }
+
     fn raw_to_naive_date(data: &[u8]) -> Result<NaiveDate, NHICardParseError> {
         let s = String::from_utf8(data.to_vec())?;
 
@@ -125,18 +133,57 @@ impl NHICardBasic {
             full_name,
             id_no,
             birth_date,
-            birth_date_timestamp: NaiveDateTime::new(birth_date, NaiveTime::default())
-                .and_local_timezone(Local)
-                .latest()
-                .unwrap()
-                .timestamp_millis(),
+            birth_date_timestamp: Self::naive_date_to_timestamp_millis(birth_date),
             sex,
             issue_date,
-            issue_date_timestamp: NaiveDateTime::new(birth_date, NaiveTime::default())
-                .and_local_timezone(Local)
-                .latest()
-                .unwrap()
-                .timestamp_millis(),
+            issue_date_timestamp: Self::naive_date_to_timestamp_millis(issue_date),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(birth_date: &[u8], issue_date: &[u8]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(57);
+
+        data.extend_from_slice(b"000012345678");
+
+        let (full_name, ..) = encoding_rs::BIG5.encode("王小明");
+
+        data.extend_from_slice(&full_name);
+        data.resize(32, 0);
+        data.extend_from_slice(b"A123456789");
+        data.extend_from_slice(birth_date);
+        data.push(b'M');
+        data.extend_from_slice(issue_date);
+
+        data
+    }
+
+    #[test]
+    fn from_raw() {
+        let basic = NHICardBasic::from_raw(raw(b"0790101", b"1090101")).unwrap();
+
+        assert_eq!("000012345678", basic.card_no);
+        assert_eq!("王小明", basic.full_name);
+        assert_eq!("A123456789", basic.id_no);
+        assert_eq!(NaiveDate::from_ymd_opt(1990, 1, 1).unwrap(), basic.birth_date);
+        assert_eq!(631123200000, basic.birth_date_timestamp);
+        assert_eq!(Sex::Male, basic.sex);
+        assert_eq!(NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(), basic.issue_date);
+        assert_eq!(1577808000000, basic.issue_date_timestamp);
+    }
+
+    #[test]
+    fn from_raw_dst_date() {
+        // 1955-04-01 是 Asia/Taipei 時區日光節約時間的開始日，時間戳記仍須是 UTC+8 的午夜
+        let basic = NHICardBasic::from_raw(raw(b"0440401", b"1040630")).unwrap();
+
+        assert_eq!(NaiveDate::from_ymd_opt(1955, 4, 1).unwrap(), basic.birth_date);
+        assert_eq!(-465638400000, basic.birth_date_timestamp);
+        assert_eq!(NaiveDate::from_ymd_opt(2015, 6, 30).unwrap(), basic.issue_date);
+        assert_eq!(1435593600000, basic.issue_date_timestamp);
     }
 }
