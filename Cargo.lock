@@ -243,9 +243,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "concat-with"
-version = "0.2.10"
+version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce5bdfa3c9147f1a354c8380ff9ec5bfc1a9ad4e242b974044bcb8ef0bdbba1"
+checksum = "fae2da981e7691eaa6aeda5f1a50cd1fc0331349229330d6b916368e39b159a2"
 
 [[package]]
 name = "core_detect"
